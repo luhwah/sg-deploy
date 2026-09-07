@@ -1,0 +1,3 @@
+# deploy.sh runs on an Ubuntu runner and is dry-run locally under Git Bash; both
+# choke on CRLF. Keep every file here LF whatever the checkout's autocrlf says.
+* text=auto eol=lf

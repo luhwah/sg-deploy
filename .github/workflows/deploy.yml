@@ -1,0 +1,70 @@
+# The reusable SiteGround deploy — called by each app's own .github/workflows/deploy*.yml.
+# Job-level policy lives HERE, once: the runner, the timeout, and the concurrency rule
+# that stops two deploys of the same site extracting into one docroot at the same
+# time. The deploy logic lives in ../../deploy.sh via the composite action at the
+# repo root.
+#
+# Why this exists (2026-09-07): every SiteGround connection used to leave one
+# developer machine — a shared Starlink CGNAT address that was firewall-blocked
+# three times — and then one static jump host, rationed to 15 connections an hour.
+# A deploy from a GitHub runner costs that ration nothing, arrives from a fresh
+# address every run, and ships only what is PUSHED.
+name: sg-deploy
+
+on:
+  workflow_call:
+    inputs:
+      dry_run:
+        description: Print the plan, connect to nothing
+        type: boolean
+        default: false
+      verify:
+        description: One connection, nothing uploaded — the smoke test only
+        type: boolean
+        default: false
+      skip_lint:
+        description: Skip the server-side php -l sweep
+        type: boolean
+        default: false
+      dir:
+        description: Directory holding deploy.json, relative to the checkout
+        type: string
+        default: "."
+      app:
+        description: Name for the archive and log heading (default — the repository name)
+        type: string
+        default: ""
+    secrets:
+      SG_SSH_KEY:
+        description: Private half of the dedicated CI deploy key for this site's hosting account
+        required: true
+      SG_SSH_USER:
+        description: u####-xxxx@ssh.<host>
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: ${{ inputs.dry_run && 'plan (dry run)' || inputs.verify && 'verify' || 'deploy' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0        # version.json is written from `git describe --tags`
+          fetch-tags: true
+      - uses: luhwah/sg-deploy@main
+        with:
+          ssh-key: ${{ secrets.SG_SSH_KEY }}
+          ssh-user: ${{ secrets.SG_SSH_USER }}
+          known-hosts: ${{ vars.SG_KNOWN_HOSTS }}
+          dir: ${{ inputs.dir }}
+          app: ${{ inputs.app }}
+          dry-run: ${{ inputs.dry_run }}
+          verify: ${{ inputs.verify }}
+          skip-lint: ${{ inputs.skip_lint }}

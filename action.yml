@@ -1,0 +1,69 @@
+name: SiteGround deploy
+description: >-
+  Two-connection tarball deploy of a deploy.json app to its SiteGround site, from a
+  GitHub runner — so no SiteGround traffic originates from a developer's machine.
+  Logic lives in deploy.sh beside this file.
+
+inputs:
+  ssh-key:
+    description: Private half of a DEDICATED CI deploy key for the hosting account (never a person's own key)
+    required: true
+  ssh-user:
+    description: u####-xxxx@ssh.<host> for the SiteGround account that owns the site
+    required: true
+  known-hosts:
+    description: known_hosts line(s) for [ssh.<host>]:18765 — pins the host key when set
+    required: false
+    default: ""
+  dir:
+    description: Directory holding deploy.json, relative to the checkout (a repo can hold more than one site)
+    required: false
+    default: "."
+  app:
+    description: Name used for the archive and the log heading (default — the repository name)
+    required: false
+    default: ""
+  dry-run:
+    description: Print the plan and connect to nothing
+    required: false
+    default: "false"
+  verify:
+    description: One connection, nothing uploaded — run the smoke test only
+    required: false
+    default: "false"
+  skip-lint:
+    description: Skip the server-side php -l sweep
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy
+      shell: bash
+      env:
+        SSH_KEY: ${{ inputs.ssh-key }}
+        SG_SSH_USER: ${{ inputs.ssh-user }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+        DIR: ${{ inputs.dir }}
+        APP_IN: ${{ inputs.app }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        VERIFY: ${{ inputs.verify }}
+        SKIP_LINT: ${{ inputs.skip-lint }}
+        REPO_NAME: ${{ github.event.repository.name }}
+      run: |
+        set -euo pipefail
+        umask 077
+        KEYDIR=$(mktemp -d)
+        trap 'rm -rf "$KEYDIR"' EXIT
+        if [ "$DRY_RUN" != true ]; then
+          # The secret arrives as text; OpenSSH wants LF endings and a trailing newline.
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$KEYDIR/key"
+          chmod 600 "$KEYDIR/key"
+          if [ -n "$KNOWN_HOSTS" ]; then printf '%s\n' "$KNOWN_HOSTS" | tr -d '\r' > "$KEYDIR/known_hosts"; fi
+          echo "runner egress IP: $(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+        fi
+        export SSH_KEY_FILE="$KEYDIR/key" SSH_KNOWN_HOSTS_FILE="$KEYDIR/known_hosts"
+        export APP="${APP_IN:-$REPO_NAME}"
+        cd "$DIR"
+        bash "$GITHUB_ACTION_PATH/deploy.sh"
