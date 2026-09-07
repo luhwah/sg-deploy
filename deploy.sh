@@ -304,7 +304,8 @@ R=$(mktemp -t remote-XXXXXX.sh)
   if [ "$SKIP_LINT" != true ] && [ "$LINT" != none ]; then for f in "${PHP[@]}"; do printf 'php -l %q\n' "$f"; done; fi
   smoke_script
 } > "$R"
-echo "-- connection 2 of 2: extract, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks'), lint ${#PHP[@]} php file(s), smoke"
+NLINT=${#PHP[@]}; { [ "$SKIP_LINT" = true ] || [ "$LINT" = none ]; } && NLINT=0
+echo "-- connection 2 of 2: extract, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks (which lint the engine)'), lint $NLINT php file(s), smoke"
 ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"
 rm -f "$R"
 [ -n "$DIGEST" ] && echo "engine digest $DIGEST"
