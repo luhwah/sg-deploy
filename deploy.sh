@@ -10,8 +10,11 @@
 #   site          "app.example.com"      remote base www/<site>, docroot www/<site>/public_html
 #   sshUser       "u####-x@ssh.host"     the account (the SG_SSH_USER env var overrides)
 #   shape         "manifest" | "webavie" see below
+#   docroot       "public_html"          the dir under www/<site> the set lands in; "laravel" for an
+#                                         app root that public_html merely symlinks into
 #   srcDir        "public"               ship every tracked file under this dir into the docroot
-#                                         (prefix stripped). Without it, the legacy rule applies:
+#                                         (prefix stripped); "." ships the whole tracked tree.
+#                                         Without it, the legacy rule applies:
 #                                         root *.php/css/js/html + version.json + .htaccess,
 #                                         every api/<file>, and the extraDirs.
 #   include       ["site/**","directory/*.php"]  instead of srcDir: tracked files matching these
@@ -84,7 +87,8 @@ SITE=$(J '.site // empty' "$M"); [ -n "$SITE" ] || { echo "::error::$M is missin
 SSH_USER="${SG_SSH_USER:-$(J '.sshUser // empty' "$M")}"
 SHAPE=$(J '.shape // "manifest"' "$M")
 PORT=18765
-BASE="www/$SITE"; DOC=public_html
+BASE="www/$SITE"
+DOC=$(J '.docroot // "public_html"' "$M")   # the dir under www/<site> the set lands in — "laravel" when public_html is a symlink into it
 SRC_DIR=$(J '.srcDir // empty' "$M")
 mapfile -t INCLUDE < <(J '.include[]? // empty' "$M")
 mapfile -t EXCL    < <(printf '%s\n' deploy.json dashavie.json deploy.ps1 check_php_braces.py; J '.exclude[]? // empty' "$M")
@@ -154,7 +158,10 @@ excluded() { local x; for x in "${EXCL[@]}"; do [[ "$1" == $x ]] && return 0; do
 included() { local x; for x in "${INCLUDE[@]}"; do [[ "$1" == $x ]] && return 0; done; return 1; }
 
 CAND=()   # "src<TAB>dst" — src repo-relative, dst docroot-relative
-if [ -n "$SRC_DIR" ]; then
+if [ "$SRC_DIR" = "." ]; then
+  # the whole tracked tree is the app (a Laravel root, say) — excludes carry the weight
+  for f in "${TRACKED[@]}"; do excluded "$f" && continue; CAND+=("$f"$'\t'"$f"); done
+elif [ -n "$SRC_DIR" ]; then
   for f in "${TRACKED[@]}"; do [[ "$f" == "$SRC_DIR"/* ]] || continue; excluded "$f" && continue; CAND+=("$f"$'\t'"${f#"$SRC_DIR"/}"); done
 elif [ ${#INCLUDE[@]} -gt 0 ]; then
   for f in "${TRACKED[@]}"; do included "$f" || continue; excluded "$f" && continue; CAND+=("$f"$'\t'"$f"); done

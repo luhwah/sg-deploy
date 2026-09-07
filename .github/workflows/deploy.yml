@@ -54,6 +54,10 @@ on:
         description: Name for the archive and log heading (default — the repository name)
         type: string
         default: ""
+      node:
+        description: Node.js major to install before staging (an app whose stageScript runs a Vite build); empty = none
+        type: string
+        default: ""
     secrets:
       SG_SSH_KEY:
         description: Private half of the dedicated CI deploy key for this site's hosting account
@@ -78,6 +82,12 @@ jobs:
         with:
           fetch-depth: 0        # version.json is written from `git describe --tags`
           fetch-tags: true
+      - if: inputs.node != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.dir }}/package-lock.json
       - uses: luhwah/sg-deploy@main
         with:
           ssh-key: ${{ secrets.SG_SSH_KEY }}
