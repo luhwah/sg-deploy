@@ -1,8 +1,8 @@
 name: SiteGround deploy
 description: >-
-  Two-connection tarball deploy of a deploy.json app to its SiteGround site, from a
-  GitHub runner — so no SiteGround traffic originates from a developer's machine.
-  Logic lives in deploy.sh beside this file.
+  Two-connection deploy of a deploy.json app to its SiteGround site, from a GitHub
+  runner — so no SiteGround traffic originates from a developer's machine. Logic lives
+  in deploy.sh beside this file.
 
 inputs:
   ssh-key:
@@ -35,6 +35,26 @@ inputs:
     description: Skip the server-side php -l sweep
     required: false
     default: "false"
+  migrate:
+    description: webavie — run pending schema migrations after the extract
+    required: false
+    default: "false"
+  ensure-admin:
+    description: webavie — make sure the platform admin account exists (never resets a password)
+    required: false
+    default: "false"
+  seed:
+    description: webavie — seed a home page if the site is empty
+    required: false
+    default: "false"
+  seed-all:
+    description: webavie — seed the full starter set
+    required: false
+    default: "false"
+  expect-digest:
+    description: webavie — the engine digest the laptop computed; the run aborts before uploading if the staged engine differs
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -50,6 +70,11 @@ runs:
         DRY_RUN: ${{ inputs.dry-run }}
         VERIFY: ${{ inputs.verify }}
         SKIP_LINT: ${{ inputs.skip-lint }}
+        MIGRATE: ${{ inputs.migrate }}
+        ENSURE_ADMIN: ${{ inputs.ensure-admin }}
+        SEED: ${{ inputs.seed }}
+        SEED_ALL: ${{ inputs.seed-all }}
+        EXPECT_DIGEST: ${{ inputs.expect-digest }}
         REPO_NAME: ${{ github.event.repository.name }}
       run: |
         set -euo pipefail

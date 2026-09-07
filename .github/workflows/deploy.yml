@@ -26,6 +26,26 @@ on:
         description: Skip the server-side php -l sweep
         type: boolean
         default: false
+      migrate:
+        description: webavie — run pending schema migrations
+        type: boolean
+        default: false
+      ensure_admin:
+        description: webavie — make sure the platform admin account exists
+        type: boolean
+        default: false
+      seed:
+        description: webavie — seed a home page if the site is empty
+        type: boolean
+        default: false
+      seed_all:
+        description: webavie — seed the full starter set
+        type: boolean
+        default: false
+      expect_digest:
+        description: webavie — the engine digest computed on the laptop
+        type: string
+        default: ""
       dir:
         description: Directory holding deploy.json, relative to the checkout
         type: string
@@ -68,3 +88,8 @@ jobs:
           dry-run: ${{ inputs.dry_run }}
           verify: ${{ inputs.verify }}
           skip-lint: ${{ inputs.skip_lint }}
+          migrate: ${{ inputs.migrate }}
+          ensure-admin: ${{ inputs.ensure_admin }}
+          seed: ${{ inputs.seed }}
+          seed-all: ${{ inputs.seed_all }}
+          expect-digest: ${{ inputs.expect_digest }}
