@@ -1,0 +1,64 @@
+# Reusable "run one script on the server" workflow — the read/ops sibling of
+# deploy.yml. Called by each app's .github/workflows/remote.yml; dispatched by
+# node C:/luhwah/tools/remote.mjs <app> --script <file>. Logic lives in remote.sh.
+#
+# One authenticated ssh per run, from a GitHub runner, nothing uploaded. See the
+# header of remote.sh for why this exists and what it deliberately is not.
+name: sg-remote
+on:
+  workflow_call:
+    inputs:
+      script_b64:
+        description: The script to run over ONE ssh (base64 of a bash script)
+        type: string
+        required: true
+      app:
+        description: Name for the log heading (default — the repository name)
+        type: string
+        default: ""
+    secrets:
+      SG_SSH_KEY:
+        description: Private half of the dedicated CI deploy key for this site's hosting account
+        required: true
+      SG_SSH_USER:
+        description: u####-xxxx@ssh.<host>
+        required: true
+permissions:
+  contents: read
+jobs:
+  remote:
+    name: remote
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Serialised with the app's own deploys: a read while an extract is halfway
+    # through is a read of a half-written tree.
+    concurrency:
+      group: sg-deploy-${{ github.repository }}-.
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: luhwah/sg-deploy
+          ref: main
+          path: sg-deploy
+      - name: Run
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.SG_SSH_KEY }}
+          SG_SSH_USER: ${{ secrets.SG_SSH_USER }}
+          KNOWN_HOSTS: ${{ vars.SG_KNOWN_HOSTS }}
+          SCRIPT_B64: ${{ inputs.script_b64 }}
+          APP_IN: ${{ inputs.app }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEYDIR=$(mktemp -d)
+          trap 'rm -rf "$KEYDIR"' EXIT
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$KEYDIR/key"
+          chmod 600 "$KEYDIR/key"
+          if [ -n "$KNOWN_HOSTS" ]; then printf '%s\n' "$KNOWN_HOSTS" | tr -d '\r' > "$KEYDIR/known_hosts"; fi
+          echo "runner egress IP: $(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+          export SSH_KEY_FILE="$KEYDIR/key" SSH_KNOWN_HOSTS_FILE="$KEYDIR/known_hosts"
+          export APP="${APP_IN:-$REPO_NAME}"
+          bash sg-deploy/remote.sh
