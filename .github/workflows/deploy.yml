@@ -42,6 +42,10 @@ on:
         description: webavie — seed the full starter set
         type: boolean
         default: false
+      seed_refresh:
+        description: webavie — rewrite existing pages from content/ (staging sites only)
+        type: boolean
+        default: false
       expect_digest:
         description: webavie — the engine digest computed on the laptop
         type: string
@@ -102,4 +106,5 @@ jobs:
           ensure-admin: ${{ inputs.ensure_admin }}
           seed: ${{ inputs.seed }}
           seed-all: ${{ inputs.seed_all }}
+          seed-refresh: ${{ inputs.seed_refresh }}
           expect-digest: ${{ inputs.expect_digest }}

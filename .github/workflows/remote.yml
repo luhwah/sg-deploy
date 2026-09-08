@@ -16,6 +16,10 @@ on:
         description: Name for the log heading (default — the repository name)
         type: string
         default: ""
+      dir:
+        description: The site's directory in the repo (a repo holding two sites passes it, so the read is serialised with THAT site's deploys)
+        type: string
+        default: "."
     secrets:
       SG_SSH_KEY:
         description: Private half of the dedicated CI deploy key for this site's hosting account
@@ -33,7 +37,7 @@ jobs:
     # Serialised with the app's own deploys: a read while an extract is halfway
     # through is a read of a half-written tree.
     concurrency:
-      group: sg-deploy-${{ github.repository }}-.
+      group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5

@@ -51,6 +51,10 @@ inputs:
     description: webavie — seed the full starter set
     required: false
     default: "false"
+  seed-refresh:
+    description: webavie — REWRITE existing pages from the repo's content/ (staging sites only; the engine refuses on a live site)
+    required: false
+    default: "false"
   expect-digest:
     description: webavie — the engine digest the laptop computed; the run aborts before uploading if the staged engine differs
     required: false
@@ -74,6 +78,7 @@ runs:
         ENSURE_ADMIN: ${{ inputs.ensure-admin }}
         SEED: ${{ inputs.seed }}
         SEED_ALL: ${{ inputs.seed-all }}
+        SEED_REFRESH: ${{ inputs.seed-refresh }}
         EXPECT_DIGEST: ${{ inputs.expect-digest }}
         REPO_NAME: ${{ github.event.repository.name }}
       run: |

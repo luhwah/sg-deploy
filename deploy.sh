@@ -49,7 +49,12 @@
 # platform's deploy-checks.sh runs at the end — a "PROBLEM(S)" line fails the job.
 #
 # Modes:  (default) deploy — 2 connections · -DryRun/-WhatIf — plan only, 0 · -Verify —
-# smoke only, 1 · -SkipLint. webavie extras via env: MIGRATE, ENSURE_ADMIN, SEED, SEED_ALL.
+# smoke only, 1 · -SkipLint. webavie extras via env: MIGRATE, ENSURE_ADMIN, SEED, SEED_ALL,
+# SEED_REFRESH (rewrite existing pages from content/ — staging sites only; seed.php refuses otherwise).
+#
+# The smoke test also reports WHAT IS LIVE — version.json on disk, at the edge, and
+# from the origin — so -Verify answers "what version is running" and names a stale
+# edge cache when disk and edge disagree.
 #
 # Environment: SSH_KEY_FILE (required unless dry run), SG_SSH_USER, SSH_KNOWN_HOSTS_FILE
 # (optional; pins the host key), APP (archive/heading name; default cwd), EXPECT_DIGEST.
@@ -60,6 +65,7 @@ shopt -s nocasematch   # PowerShell's -match / -in are case-insensitive; keep pa
 
 DRY_RUN="${DRY_RUN:-false}"; VERIFY="${VERIFY:-false}"; SKIP_LINT="${SKIP_LINT:-false}"
 MIGRATE="${MIGRATE:-false}"; ENSURE_ADMIN="${ENSURE_ADMIN:-false}"; SEED="${SEED:-false}"; SEED_ALL="${SEED_ALL:-false}"
+SEED_REFRESH="${SEED_REFRESH:-false}"
 for a in "$@"; do
   case "$a" in
     -DryRun|-WhatIf|--dry-run) DRY_RUN=true ;;
@@ -69,6 +75,7 @@ for a in "$@"; do
     -EnsureAdmin|--ensure-admin) ENSURE_ADMIN=true ;;
     -Seed|--seed)              SEED=true ;;
     -SeedAll|--seed-all)       SEED_ALL=true ;;
+    -SeedRefresh|--seed-refresh) SEED_REFRESH=true ;;
     *) echo "::error::unknown argument: $a"; exit 2 ;;
   esac
 done
@@ -136,6 +143,19 @@ smoke_script() {
   local c; for c in "${CANARIES[@]}"; do
     printf 'C=$(curl -s -o /dev/null -m 20 -w "%%{http_code}" %q); echo "canary HTTP $C  %s (want 403/404)"; [ "$C" = 200 ] && BAD=1\n' "https://$SITE/$c" "https://$SITE/$c"
   done
+  # WHAT IS LIVE, read two ways (added 2026-09-08). Until this line existed --verify
+  # pinged and checked canaries and never read version.json, so "what is actually
+  # live?" — the question it looks like it answers — cost an evening on 2026-09-07:
+  # intellavie's disk said v2.18.0 while the edge served v2.17.0 and the queue read
+  # it as a missing deploy. The DISK is what the deploy wrote; the EDGE is what a
+  # visitor gets; a cache-busted fetch is what the origin serves now. Naming WHICH
+  # disagrees is the whole diagnosis. Reported, never a gate: an app with
+  # versionJson:false publishes no file, and a stale edge is not a failed deploy.
+  printf 'VF=""; for f in "$HOME/www/%s/%s/version.json" "$HOME/www/%s/%s/public/version.json"; do [ -f "$f" ] && { VF="$f"; break; }; done\n' "$SITE" "$DOC" "$SITE" "$DOC"
+  echo 'vj() { sed -n '"'"'s/.*"version" *: *"\([^"]*\)".*/\1/p'"'"' | head -1; }'
+  echo 'VD=$([ -n "$VF" ] && vj < "$VF")'
+  printf 'VE=$(curl -s -m 20 %q | vj); VN=$(curl -s -m 20 %q | vj)\n' "https://$SITE/version.json" "https://$SITE/version.json?cb=$CB"
+  echo 'if [ -n "$VD$VE$VN" ]; then echo "version on disk ${VD:-(none)}  edge ${VE:-(none)}  origin ${VN:-(none)}$([ -n "$VD" ] && [ -n "$VE" ] && [ "$VD" != "$VE" ] && echo "  <- the EDGE CACHE is stale; the deploy landed (NGINX caches static files; no purge API on this account)")"; else echo "version (no version.json on disk or over HTTPS)"; fi'
   echo 'echo "server saw this connection arrive from ${SSH_CONNECTION%% *}"'
   echo '[ "$P" = 200 ] || { echo "::error::ping did not answer 200"; exit 1; }'
   echo '[ "$BAD" = 0 ] || { echo "::error::A CANARY ANSWERED 200 — something above the docroot or inside the engine is web-readable"; exit 1; }'
@@ -205,7 +225,7 @@ done
 if [[ "$SHAPE" == webavie ]]; then
   [ -f .engine/deploy-checks.sh ] || { echo "::error::.engine/deploy-checks.sh is not in this repo — run the engine's tools/sync.ps1 and commit .engine/"; exit 1; }
   mkdir -p "$STAGE/.engine"; cp -rp .engine/. "$STAGE/.engine/"
-  if { [ "$SEED" = true ] || [ "$SEED_ALL" = true ]; } && [ -d content ]; then cp -rp content "$STAGE/content"; fi
+  if { [ "$SEED" = true ] || [ "$SEED_ALL" = true ] || [ "$SEED_REFRESH" = true ]; } && [ -d content ]; then cp -rp content "$STAGE/content"; fi
 fi
 if [ "$VERSION_JSON" = true ] && [ -n "$TAG" ]; then
   printf '{"version":"%s"}\n' "$TAG" > "$DST/version.json"; echo "version.json -> $TAG"
@@ -301,6 +321,11 @@ R=$(mktemp -t remote-XXXXXX.sh)
     [ "$ENSURE_ADMIN" = true ] && echo 'php .engine/tools/ensure-admin.php --site="$HOME/www/$SITE" --commit'
     if   [ "$SEED_ALL" = true ]; then echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE" --all'
     elif [ "$SEED" = true ];     then echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE"'; fi
+    # --refresh REWRITES existing pages from content/ and seed.php itself refuses on a
+    # site that is no longer staging — the runner adds no second gate, the engine's is
+    # the one that counts. Until 2026-09-08 a recipe change on a staging site shipped
+    # from GitHub and then still needed the local script (-Seed -Refresh, 2 connections).
+    [ "$SEED_REFRESH" = true ] && echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE" --refresh'
   fi
   for s in "${REMOTE_STEPS[@]}"; do printf '%s\n' "$s"; done
   if [[ "$SHAPE" == webavie ]]; then
