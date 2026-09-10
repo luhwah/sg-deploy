@@ -68,6 +68,16 @@ run_case "$CASE" timeout 'echo never reached' 255 \
   "-- end (exit 255) --" "::error::ssh could not run the script on testapp" \
   "re-run once" "NEVER re-run a 'Permission denied'" '!never reached'
 
+# The hard case, and the reason the stamp exists at all: ssh returns 255 for its OWN
+# failures, so a script that exits 255 is indistinguishable from a dead connection by
+# exit code alone. scrumrl-85 hit exactly this on 2026-09-10 — a PHP snippet that
+# "printed its output fine" and still ended `-- end (exit 255) --`. The stamp is
+# present in one case and absent in the other, which is the whole distinction.
+CASE="a script that exits 255 is NOT a dead connection"
+run_case "$CASE" run 'echo "the output arrived"; exit 255' 0 \
+  "the output arrived" "-- end (exit 255) --" "::warning::the script returned exit 255" \
+  '!::error::ssh could not run the script'
+
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
   "__sg_remote_rc_9__ is not mine" "-- end (exit 0) --"
