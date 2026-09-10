@@ -1,0 +1,30 @@
+# Proves the one link the unit tests cannot reach: that `blocked=1` actually travels
+# from deploy.sh out through the composite action's output, up to the job's output, and
+# fires the `retry` job's `if`. That chain only runs during an outage, which is exactly
+# when nobody is watching it, so it is worth dispatching once by hand.
+#
+# It dials 127.0.0.1 on the runner. Nothing listens there, so the connect is refused
+# instantly — the same class of failure as a blocked SiteGround address and the same
+# line from OpenSSH — and no real host is contacted, no real key is used, and `verify`
+# uploads nothing even if it somehow got through.
+#
+# EXPECTED: job 1 GREEN with `::warning::SiteGround is not answering this runner's
+# address`, job 2 RUNS and fails with `::error::… from this runner too`. A RED run is
+# the pass. If job 2 says "skipped", the wiring is broken and a blocked deploy would
+# still be a failed deploy.
+#
+# Dispatch only, never on push, and never called by an app.
+name: selftest — retry wiring
+on:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      verify: true          # one connection, nothing staged, nothing uploaded
+      dir: .selftest
+      app: selftest
+    secrets:
+      SG_SSH_KEY: "not-a-key — the connect fails before anything is authenticated"
+      SG_SSH_USER: "nobody@127.0.0.1"

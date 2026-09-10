@@ -132,7 +132,10 @@ jobs:
   # seconds later, and mailed its owner "All jobs have failed" for a deploy that was
   # live — which is how a person learns to skim past the mails that matter.
   retry:
-    name: ${{ inputs.verify && 'verify' || 'deploy' }} (second runner address)
+    # A static name on purpose: a SKIPPED job never has its name expression
+    # evaluated, so the ordinary green run listed this one as the literal
+    # `${{ ((inputs.verify && 'verify') || 'deploy') }} (second runner address)`.
+    name: second runner address
     needs: deploy
     if: needs.deploy.outputs.blocked == '1'
     runs-on: ubuntu-latest
