@@ -81,12 +81,12 @@ if [ -s "$RCFILE" ]; then
   RC=$(cat "$RCFILE")
   echo "-- end (exit $RC) --"
   if [ "$RC" != "0" ]; then
-    echo "::warning::the script returned exit $RC - it CONNECTED and its output is above. A read-only run does not fail on the script own exit code; read the output."
+    echo "::warning::the script returned exit $RC — it CONNECTED and its output is above. A read-only run does not fail on the script's own exit code; read the output."
   fi
   exit 0
 fi
 
 # Nothing came back from the remote shell: the connection is what failed.
 echo "-- end (exit $SSH_RC) --"
-echo "::error::ssh could not run the script on ${APP:-this account} (exit $SSH_RC). A timeout is usually a runner address SiteGround has blocked - re-run once. NEVER re-run a Permission denied: that is a key or username problem, not a fluke."
+echo "::error::ssh could not run the script on ${APP:-this account} (exit $SSH_RC). A timeout is usually a runner address SiteGround has blocked — re-run once. NEVER re-run a 'Permission denied': that is a key or username problem, not a fluke."
 exit "$SSH_RC"

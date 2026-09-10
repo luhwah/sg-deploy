@@ -66,7 +66,7 @@ for f in /nope/a.json /nope/b.json; do [ -f "$f" ] && echo "$f"; done' 0 \
 CASE="a timed-out connection DOES fail the job, with the re-run rule"
 run_case "$CASE" timeout 'echo never reached' 255 \
   "-- end (exit 255) --" "::error::ssh could not run the script on testapp" \
-  "re-run once" "NEVER re-run a Permission denied" '!never reached'
+  "re-run once" "NEVER re-run a 'Permission denied'" '!never reached'
 
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
