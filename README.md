@@ -114,3 +114,12 @@ first job outright, and the second never starts.
 Two blocked addresses in a row still fails the run, which is the point: a red run
 should mean something. `deploy.test.sh` and `remote.test.sh` hold the cases (they stub
 `ssh`/`scp` and connect to nothing — `bash deploy.test.sh`).
+
+The one link those cannot reach is `blocked=1` travelling out through the action's
+output and firing the second job's `if`. A dispatch-only `selftest-retry.yml` proved it
+against `127.0.0.1` on the runner — nothing listens there, so the connect is refused
+instantly and no real host is contacted. **It was deleted after it passed**, because its
+pass is a RED run and a workflow that exists to fail is one somebody eventually mistakes
+for a broken deploy. To re-prove the chain after changing it,
+`git log --diff-filter=D -- .github/workflows/selftest-retry.yml` names the commit and
+`git checkout <that>^ -- .github/workflows/selftest-retry.yml .selftest/` brings it back.
