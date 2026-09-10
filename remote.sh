@@ -35,8 +35,18 @@
 # annotation, and the job SUCCEEDS. deploy.sh is unchanged and still fails on
 # anything non-zero: a deploy has a verdict, a read has an answer.
 #
+# AND A BLOCKED ADDRESS IS NOT A FAILED READ EITHER (2026-09-10). The connection is
+# the one way a read fails, and its commonest cause is not the read: SiteGround drops
+# SSH from an address it has blocked, and a runner draws its address from a shared
+# pool. A job cannot change its own address, so with SOFT_FAIL_ON_BLOCK=true a connect
+# timeout records blocked=1 and exits 0, and the retry job in
+# .github/workflows/remote.yml runs the script from a runner that got a different
+# draw. Only the TCP connect qualifies — "Permission denied" is a key or username
+# problem and stays a failure on the first attempt.
+#
 # Inputs (env): SSH_KEY_FILE, SSH_KNOWN_HOSTS_FILE (optional), SG_SSH_USER,
-#               SCRIPT_B64 (the script, base64 — newlines and quotes travel intact).
+#               SCRIPT_B64 (the script, base64 — newlines and quotes travel intact),
+#               SOFT_FAIL_ON_BLOCK (see above).
 # sg-connections: 1   (one ssh — on a runner it costs the local ration nothing)
 set -euo pipefail
 
@@ -63,9 +73,13 @@ echo "-- output --"
 # is stripped back out here, and `-- end (exit N) --` keeps its exact shape because
 # tools/remote.mjs parses that line.
 RCFILE=$(mktemp)
-trap 'rm -f "$SCRIPT" "$RCFILE"' EXIT
+# ssh's own stderr is held aside rather than let straight through, because telling a
+# blocked address from a refused key means reading what OpenSSH said. It is replayed
+# below, before the end marker, so nothing is swallowed.
+ERRFILE=$(mktemp)
+trap 'rm -f "$SCRIPT" "$RCFILE" "$ERRFILE"' EXIT
 set +e
-ssh -p "$PORT" "${SSH_OPTS[@]}" "$SG_SSH_USER" 'bash -s; printf "__sg_remote_rc_%s__" "$?"' < "$SCRIPT" | awk -v rcf="$RCFILE" '
+ssh -p "$PORT" "${SSH_OPTS[@]}" "$SG_SSH_USER" 'bash -s; printf "__sg_remote_rc_%s__" "$?"' < "$SCRIPT" 2>"$ERRFILE" | awk -v rcf="$RCFILE" '
       # The stamp carries no newline of its own, so a script whose output ended
       # without one keeps its last line intact and nothing gains a blank line.
       match($0, /__sg_remote_rc_[0-9]+__$/) {
@@ -76,6 +90,7 @@ ssh -p "$PORT" "${SSH_OPTS[@]}" "$SG_SSH_USER" 'bash -s; printf "__sg_remote_rc_
       { print; fflush() }'
 SSH_RC=${PIPESTATUS[0]}
 set -e
+if [ -s "$ERRFILE" ]; then cat "$ERRFILE" >&2; fi
 
 if [ -s "$RCFILE" ]; then
   RC=$(cat "$RCFILE")
@@ -88,5 +103,16 @@ fi
 
 # Nothing came back from the remote shell: the connection is what failed.
 echo "-- end (exit $SSH_RC) --"
+
+# ... and if it never connected at all, the address is the likeliest reason. This is
+# the one line OpenSSH prints when the TCP connect itself fails; an auth failure says
+# something else entirely and falls through to the error below.
+if [ "${SOFT_FAIL_ON_BLOCK:-false}" = true ] \
+   && grep -Eq '^(ssh: connect to host .* port [0-9]+: |kex_exchange_identification: )' "$ERRFILE"; then
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "blocked=1" >> "$GITHUB_OUTPUT"; fi
+  echo "::warning::SiteGround is not answering this runner's address, so the script did not run — trying again from a fresh runner."
+  exit 0
+fi
+
 echo "::error::ssh could not run the script on ${APP:-this account} (exit $SSH_RC). A timeout is usually a runner address SiteGround has blocked — re-run once. NEVER re-run a 'Permission denied': that is a key or username problem, not a fluke."
 exit "$SSH_RC"

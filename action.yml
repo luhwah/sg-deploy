@@ -59,11 +59,24 @@ inputs:
     description: webavie — the engine digest the laptop computed; the run aborts before uploading if the staged engine differs
     required: false
     default: ""
+  soft-fail-on-block:
+    description: >-
+      A connect timeout sets the `blocked` output and succeeds instead of failing, so the
+      caller can deploy from a runner with a different address. Only the connect itself —
+      never an auth failure, a lint error or a canary. See dialed() in deploy.sh.
+    required: false
+    default: "false"
+
+outputs:
+  blocked:
+    description: "1 when this runner's address could not reach SiteGround and NOTHING was deployed — try again from a fresh runner"
+    value: ${{ steps.deploy.outputs.blocked }}
 
 runs:
   using: composite
   steps:
     - name: Deploy
+      id: deploy
       shell: bash
       env:
         SSH_KEY: ${{ inputs.ssh-key }}
@@ -80,6 +93,7 @@ runs:
         SEED_ALL: ${{ inputs.seed-all }}
         SEED_REFRESH: ${{ inputs.seed-refresh }}
         EXPECT_DIGEST: ${{ inputs.expect-digest }}
+        SOFT_FAIL_ON_BLOCK: ${{ inputs.soft-fail-on-block }}
         REPO_NAME: ${{ github.event.repository.name }}
       run: |
         set -euo pipefail

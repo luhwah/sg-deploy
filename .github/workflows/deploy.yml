@@ -9,6 +9,9 @@
 # three times — and then one static jump host, rationed to 15 connections an hour.
 # A deploy from a GitHub runner costs that ration nothing, arrives from a fresh
 # address every run, and ships only what is PUSHED.
+#
+# A fresh address is also sometimes a blocked one, which is what the second job is
+# for — see the comment above `retry`.
 name: sg-deploy
 
 on:
@@ -81,10 +84,66 @@ jobs:
     concurrency:
       group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
       cancel-in-progress: false
+    outputs:
+      blocked: ${{ steps.ship.outputs.blocked }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0        # version.json is written from `git describe --tags`
+          fetch-tags: true
+      - if: inputs.node != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.dir }}/package-lock.json
+      - id: ship
+        uses: luhwah/sg-deploy@main
+        with:
+          ssh-key: ${{ secrets.SG_SSH_KEY }}
+          ssh-user: ${{ secrets.SG_SSH_USER }}
+          known-hosts: ${{ vars.SG_KNOWN_HOSTS }}
+          dir: ${{ inputs.dir }}
+          app: ${{ inputs.app }}
+          dry-run: ${{ inputs.dry_run }}
+          verify: ${{ inputs.verify }}
+          skip-lint: ${{ inputs.skip_lint }}
+          migrate: ${{ inputs.migrate }}
+          ensure-admin: ${{ inputs.ensure_admin }}
+          seed: ${{ inputs.seed }}
+          seed-all: ${{ inputs.seed_all }}
+          seed-refresh: ${{ inputs.seed_refresh }}
+          expect-digest: ${{ inputs.expect_digest }}
+          soft-fail-on-block: true
+
+  # ── The second address (2026-09-10) ─────────────────────────────────────────
+  # SiteGround's firewall drops SSH from addresses it has blocked, and a runner draws
+  # its address from a shared Azure pool where a stranger's failed logins are somebody
+  # else's morning. There is no cure but a different address, and a job cannot change
+  # its own — so the job above exits GREEN having deployed nothing, says so in an
+  # annotation, and this one does the deploy from a runner that got a different draw.
+  #
+  # Only the TCP connect qualifies (dialed() in deploy.sh). A failed auth, a lint
+  # error, a canary answering 200, a wrong engine digest: all of those fail the job
+  # above outright and this one never starts, because none of them is a fluke.
+  #
+  # It exists to make a red run mean something. mindbodysolutions' deploy on
+  # 2026-09-10 timed out from 172.214.155.115, worked from 4.154.142.179 sixty-three
+  # seconds later, and mailed its owner "All jobs have failed" for a deploy that was
+  # live — which is how a person learns to skim past the mails that matter.
+  retry:
+    name: ${{ inputs.verify && 'verify' || 'deploy' }} (second runner address)
+    needs: deploy
+    if: needs.deploy.outputs.blocked == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
           fetch-tags: true
       - if: inputs.node != ''
         uses: actions/setup-node@v4
@@ -108,3 +167,6 @@ jobs:
           seed-all: ${{ inputs.seed_all }}
           seed-refresh: ${{ inputs.seed_refresh }}
           expect-digest: ${{ inputs.expect_digest }}
+          # No third draw: two blocked addresses in a row is a real event, and the
+          # run going red for it is the point.
+          soft-fail-on-block: false

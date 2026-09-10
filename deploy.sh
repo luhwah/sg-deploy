@@ -57,7 +57,9 @@
 # edge cache when disk and edge disagree.
 #
 # Environment: SSH_KEY_FILE (required unless dry run), SG_SSH_USER, SSH_KNOWN_HOSTS_FILE
-# (optional; pins the host key), APP (archive/heading name; default cwd), EXPECT_DIGEST.
+# (optional; pins the host key), APP (archive/heading name; default cwd), EXPECT_DIGEST,
+# SOFT_FAIL_ON_BLOCK (a connect timeout records blocked=1 and exits 0 instead of failing,
+# so the workflow can try again from a runner with a different address — see dialed()).
 #
 # sg-connections: 2   (one scp, one ssh — only if run LOCALLY; on a runner it costs the local ration nothing)
 set -euo pipefail
@@ -66,6 +68,7 @@ shopt -s nocasematch   # PowerShell's -match / -in are case-insensitive; keep pa
 DRY_RUN="${DRY_RUN:-false}"; VERIFY="${VERIFY:-false}"; SKIP_LINT="${SKIP_LINT:-false}"
 MIGRATE="${MIGRATE:-false}"; ENSURE_ADMIN="${ENSURE_ADMIN:-false}"; SEED="${SEED:-false}"; SEED_ALL="${SEED_ALL:-false}"
 SEED_REFRESH="${SEED_REFRESH:-false}"
+SOFT_FAIL_ON_BLOCK="${SOFT_FAIL_ON_BLOCK:-false}"
 for a in "$@"; do
   case "$a" in
     -DryRun|-WhatIf|--dry-run) DRY_RUN=true ;;
@@ -135,6 +138,47 @@ ssh_setup() {
   fi
 }
 
+# ── A BLOCKED RUNNER ADDRESS IS NOT A FAILED DEPLOY (2026-09-10) ─────────────
+# SiteGround's firewall silently drops SSH from an address it has blocked, and a
+# GitHub runner draws its address from a shared Azure pool where a stranger's failed
+# logins become somebody else's morning. When it happens the TCP connect times out
+# and OpenSSH says so in one unmistakable line:
+#     ssh: connect to host ssh.<site> port 18765: Connection timed out
+# That line appears ONLY when the connect itself failed. An auth failure reads
+# "Permission denied (publickey)" — a key or username problem, never a fluke and
+# never retried — and a lint error, a canary or a failed ping never reach here at all.
+#
+# The only cure is a different address, which means a different runner. So with
+# SOFT_FAIL_ON_BLOCK=true this run records blocked=1 for the workflow and exits 0,
+# and the retry job in .github/workflows/deploy.yml deploys from a fresh one. Both
+# connections are safe to repeat: if the scp is what failed nothing was uploaded, and
+# if the ssh is, the archive is sitting unextracted and the retry ships it again.
+#
+# Measured: mindbodysolutions, 2026-09-10 22:25Z. From 172.214.155.115 the connect
+# timed out after 31s; the re-run 63 seconds later drew 4.154.142.179 and the whole
+# deploy took eleven. The failed attempt still mailed the owner, which is the reason
+# this exists — the same reason remote.sh stopped failing on a script's exit code.
+DIALED_OUT='^(ssh: connect to host .* port [0-9]+: |kex_exchange_identification: )'
+
+dialed() {   # dialed ssh|scp …   — the caller's stdin passes through to the command
+  local log rc
+  log=$(mktemp -t dial-XXXXXX.log)
+  set +e; "$@" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}; set -e
+  if [ "$rc" -ne 0 ] && grep -Eq "$DIALED_OUT" "$log"; then
+    rm -f "$log"
+    if [ "$SOFT_FAIL_ON_BLOCK" = true ]; then
+      if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "blocked=1" >> "$GITHUB_OUTPUT"; fi
+      echo "::warning::SiteGround is not answering this runner's address, so nothing was deployed from here — trying again from a fresh runner."
+      echo "== $APP not deployed from this runner: its address is blocked. Retrying elsewhere. =="
+      exit 0
+    fi
+    echo "::error::the connection to $SITE timed out from this runner too — SiteGround is dropping both addresses. Re-run the workflow; NEVER re-run a 'Permission denied', which is a key or username problem."
+    exit 1
+  fi
+  rm -f "$log"
+  return "$rc"
+}
+
 # The smoke test as a remote script — shared by deploy (after the steps) and verify.
 smoke_script() {
   echo 'set +e'
@@ -165,7 +209,7 @@ if [ "$VERIFY" = true ]; then
   echo "== $APP verify ($SITE) — one connection, nothing uploaded =="
   ssh_setup
   R=$(mktemp -t remote-XXXXXX.sh); smoke_script > "$R"
-  ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"; rm -f "$R"
+  dialed ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"; rm -f "$R"
   echo "== $APP verified (1 connection) =="
   exit 0
 fi
@@ -300,7 +344,7 @@ echo "archive: $(du -ch "${UP[@]}" | tail -1 | cut -f1)"
 # Both files ride the same scp, so the "last" file cannot be missing on the server
 # while the rest has landed: either the connection carried both or the run stops here.
 echo "-- connection 1 of 2: scp -> $BASE/deploy-$APP.tgz$([ -n "$LAST_PATH" ] && echo " + deploy-$APP-last.tgz")"
-scp -P "$PORT" "${SSH_OPTS[@]}" "${UP[@]}" "$SSH_USER:$BASE/"
+dialed scp -P "$PORT" "${SSH_OPTS[@]}" "${UP[@]}" "$SSH_USER:$BASE/"
 
 # ── Connection 2 of 2: extract (last file last), steps, checks, lint, smoke ──
 R=$(mktemp -t remote-XXXXXX.sh)
@@ -338,7 +382,7 @@ R=$(mktemp -t remote-XXXXXX.sh)
 } > "$R"
 NLINT=${#PHP[@]}; { [ "$SKIP_LINT" = true ] || [ "$LINT" = none ]; } && NLINT=0
 echo "-- connection 2 of 2: extract, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks (which lint the engine)'), lint $NLINT php file(s), smoke"
-ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"
+dialed ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"
 rm -f "$R"
 [ -n "$DIGEST" ] && echo "engine digest $DIGEST"
 echo "== $APP done (2 connections) =="

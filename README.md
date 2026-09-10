@@ -89,10 +89,28 @@ Revoking GitHub's access to an account is one line out of its `authorized_keys`.
 
 The composite action can also be used directly (`uses: luhwah/sg-deploy@main`) with the
 inputs `ssh-key`, `ssh-user`, `known-hosts`, `dir`, `app`, `dry-run`, `verify`,
-`skip-lint`, `migrate`, `ensure-admin`, `seed`, `seed-all`, `expect-digest`.
-`deploy.sh` also runs locally under bash (`-DryRun`, `-Verify`; needs `jq`).
+`skip-lint`, `migrate`, `ensure-admin`, `seed`, `seed-all`, `expect-digest`,
+`soft-fail-on-block`. `deploy.sh` also runs locally under bash (`-DryRun`, `-Verify`;
+needs `jq`).
 
-Runner addresses are shared with every other GitHub Actions user. A run that times
-out on the connection may have landed on an address a stranger got blocked; re-run
-it once. A run that fails with `Permission denied` is a key or username problem —
-do not re-run it.
+## The second runner address
+
+Runner addresses are shared with every other GitHub Actions user, and SiteGround's
+firewall drops SSH from addresses it has blocked — so a deploy can fail for a reason
+that has nothing to do with the deploy. A job cannot change its own address, so the
+workflow uses two of them: **the first job exits green having deployed nothing and
+says so in an annotation, and a second job does the deploy from a fresh runner.** Only
+the TCP connect qualifies, which is the one thing OpenSSH reports unambiguously:
+
+```
+ssh: connect to host ssh.example.com port 18765: Connection timed out
+```
+
+A failed auth (`Permission denied`) is a key or username problem, never a fluke, and
+fails on the first attempt — retrying one is how a house IP gets firewalled. A lint
+error, a canary answering 200, a wrong engine digest and a failed ping all fail the
+first job outright, and the second never starts.
+
+Two blocked addresses in a row still fails the run, which is the point: a red run
+should mean something. `deploy.test.sh` and `remote.test.sh` hold the cases (they stub
+`ssh`/`scp` and connect to nothing — `bash deploy.test.sh`).

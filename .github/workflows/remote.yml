@@ -39,6 +39,50 @@ jobs:
     concurrency:
       group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
       cancel-in-progress: false
+    outputs:
+      blocked: ${{ steps.run.outputs.blocked }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: luhwah/sg-deploy
+          ref: main
+          path: sg-deploy
+      - name: Run
+        id: run
+        shell: bash
+        env:
+          SSH_KEY: ${{ secrets.SG_SSH_KEY }}
+          SG_SSH_USER: ${{ secrets.SG_SSH_USER }}
+          KNOWN_HOSTS: ${{ vars.SG_KNOWN_HOSTS }}
+          SCRIPT_B64: ${{ inputs.script_b64 }}
+          APP_IN: ${{ inputs.app }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          SOFT_FAIL_ON_BLOCK: "true"
+        run: |
+          set -euo pipefail
+          umask 077
+          KEYDIR=$(mktemp -d)
+          trap 'rm -rf "$KEYDIR"' EXIT
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$KEYDIR/key"
+          chmod 600 "$KEYDIR/key"
+          if [ -n "$KNOWN_HOSTS" ]; then printf '%s\n' "$KNOWN_HOSTS" | tr -d '\r' > "$KEYDIR/known_hosts"; fi
+          echo "runner egress IP: $(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+          export SSH_KEY_FILE="$KEYDIR/key" SSH_KNOWN_HOSTS_FILE="$KEYDIR/known_hosts"
+          export APP="${APP_IN:-$REPO_NAME}"
+          bash sg-deploy/remote.sh
+
+  # The read's version of deploy.yml's `retry` — same reason, same one qualifying
+  # line from OpenSSH, and a read is repeatable by definition. The second attempt
+  # fails for real, because two blocked draws in a row is worth a mail.
+  retry:
+    name: remote (second runner address)
+    needs: remote
+    if: needs.remote.outputs.blocked == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
         with:

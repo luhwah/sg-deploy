@@ -7,6 +7,8 @@
 #
 # It stubs `ssh` on PATH, so it opens no connection and needs no key.
 #   bash remote.test.sh
+#
+# sg-connections: 0   (the stub dials nothing — nothing here leaves the machine)
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -15,11 +17,15 @@ PASS=0; FAIL=0
 
 # The stub reads the script on stdin exactly as the remote shell does, runs it, and
 # appends the stamp — or, for the transport case, dies the way ssh dies.
-make_stub() { # $1 = mode: run | timeout
+make_stub() { # $1 = mode: run | timeout | denied
   cat > "$STUB/ssh" <<STUBEOF
 #!/usr/bin/env bash
 if [ "$1" = timeout ]; then
   echo "ssh: connect to host giowm1287.siteground.biz port 18765: Connection timed out" >&2
+  exit 255
+fi
+if [ "$1" = denied ]; then
+  echo "u1234-abcd@giowm1287.siteground.biz: Permission denied (publickey)." >&2
   exit 255
 fi
 # Everything after the options is the remote command; run it under a shell the way
@@ -30,13 +36,17 @@ STUBEOF
   chmod +x "$STUB/ssh"
 }
 
-run_case() { # $1 name  $2 stub-mode  $3 script  $4 expected-exit
+run_case() { # $1 name  $2 stub-mode  $3 script  $4 expected-exit   ($SOFT arms the retry path)
   make_stub "$2"
+  local gho="$STUB/gh_output"; : > "$gho"
   local out rc
   out=$(SSH_KEY_FILE=/dev/null SG_SSH_USER=u@example.com APP=testapp \
+        SOFT_FAIL_ON_BLOCK="${SOFT:-false}" GITHUB_OUTPUT="$gho" \
         SCRIPT_B64=$(printf '%s' "$3" | base64 -w0) \
         PATH="$STUB:$PATH" bash remote.sh 2>&1)
   rc=$?
+  out="$out
+GITHUB_OUTPUT: $(cat "$gho")"
   local ok=1
   [ "$rc" = "$4" ] || { ok=0; echo "  want exit $4, got $rc"; }
   shift 4
@@ -77,6 +87,18 @@ CASE="a script that exits 255 is NOT a dead connection"
 run_case "$CASE" run 'echo "the output arrived"; exit 255' 0 \
   "the output arrived" "-- end (exit 255) --" "::warning::the script returned exit 255" \
   '!::error::ssh could not run the script'
+
+# A blocked runner address is not a failed read either (2026-09-10) — the workflow's
+# second job runs the same script from a runner that drew a different address.
+CASE="a blocked address asks for a second runner instead of failing"
+SOFT=true run_case "$CASE" timeout 'echo never reached' 0 \
+  "GITHUB_OUTPUT: blocked=1" "::warning::SiteGround is not answering this runner's address" \
+  '!::error::ssh could not run the script' '!never reached'
+
+CASE="a refused key is NEVER soft-failed, even when the caller allows it"
+SOFT=true run_case "$CASE" denied 'echo never reached' 255 \
+  "Permission denied (publickey)" "::error::ssh could not run the script on testapp" \
+  '!blocked=1'
 
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
