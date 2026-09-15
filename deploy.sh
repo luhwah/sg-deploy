@@ -262,14 +262,33 @@ for pair in "${CAND[@]}"; do
   [ -f "$src" ] || { echo "::error::Local file missing: $src"; exit 1; }
   mkdir -p "$(dirname "$DST/$dst")"; cp -p "$src" "$DST/$dst"
 done
+# A DIRECTORY IS COPIED INTO ITS DESTINATION ONCE THE DESTINATION EXISTS, which
+# is how a site ended up shipping its own pages twice: `extra` maps
+# content -> content, and the webavie seed branch below stages `content` as well,
+# so the second copy landed as content/content/ — a full duplicate of every page,
+# one level deeper, on the server. Nothing errored and the site read the right
+# one, which is why it went unnoticed until somebody listed the directory.
+# `src/.` into an existing `dst/` is the idiom that is right whether or not the
+# destination is already there; the .engine copy below has always used it.
 for src in "${!EXTRA[@]}"; do
   dst="${EXTRA[$src]}"; [ -e "$src" ] || { echo "::error::extra source missing: $src"; exit 1; }
-  mkdir -p "$(dirname "$STAGE/$dst")"; cp -rp "$src" "$STAGE/$dst"
+  if [ -d "$src" ]; then
+    mkdir -p "$STAGE/$dst"; cp -rp "$src/." "$STAGE/$dst/"
+  else
+    mkdir -p "$(dirname "$STAGE/$dst")"; cp -p "$src" "$STAGE/$dst"
+  fi
 done
 if [[ "$SHAPE" == webavie ]]; then
   [ -f .engine/deploy-checks.sh ] || { echo "::error::.engine/deploy-checks.sh is not in this repo — run the engine's tools/sync.ps1 and commit .engine/"; exit 1; }
   mkdir -p "$STAGE/.engine"; cp -rp .engine/. "$STAGE/.engine/"
-  if { [ "$SEED" = true ] || [ "$SEED_ALL" = true ] || [ "$SEED_REFRESH" = true ]; } && [ -d content ]; then cp -rp content "$STAGE/content"; fi
+  # Same idiom, same reason: a site may already have staged `content` through
+  # `extra`, and copying the directory itself would then nest it one deeper.
+  # (Written without the offending form spelled out — deploy.test.sh greps this
+  # file for it, and a pattern quoted inside the file it is matched against is a
+  # trap this family has already fallen into once, in sg-guard.)
+  if { [ "$SEED" = true ] || [ "$SEED_ALL" = true ] || [ "$SEED_REFRESH" = true ]; } && [ -d content ]; then
+    mkdir -p "$STAGE/content"; cp -rp content/. "$STAGE/content/"
+  fi
 fi
 if [ "$VERSION_JSON" = true ] && [ -n "$TAG" ]; then
   printf '{"version":"%s"}\n' "$TAG" > "$DST/version.json"; echo "version.json -> $TAG"

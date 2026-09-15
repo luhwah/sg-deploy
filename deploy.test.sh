@@ -113,6 +113,36 @@ CASE="a failure the DEPLOY caused is not a blocked address"
 run_case "$CASE" refused-by-remote true 1 \
   "::error::ping did not answer 200" '!blocked=1' '!::warning::SiteGround is not answering'
 
+# ── A DIRECTORY IS COPIED INTO ITS DESTINATION ONCE THE DESTINATION EXISTS ──
+#
+# A webavie site that lists content -> content in `extra` AND deploys with a seed
+# flag staged that directory twice: the second `cp -rp content "$STAGE/content"`
+# landed inside the first, so the server got content/content/ — a full duplicate
+# of every page, one level deeper. Nothing errored, the site read the right copy,
+# and it went unnoticed until somebody listed the directory on a real host
+# (Melvin's ATV, 2026-09-15, 31 files).
+#
+# Asserted on the source rather than by staging a whole webavie fixture: the bug
+# is which of two cp idioms is written, it is one line each, and the shapes are
+# distinguishable by reading. The end-to-end proof is the next seeding deploy,
+# which is checked on the server.
+CASE="a staged directory is copied INTO an existing destination, never nested under it"
+ok=1
+src=$(cat "$HERE/deploy.sh")
+grep -qF 'cp -rp "$src/." "$STAGE/$dst/"' <<<"$src" \
+  || { ok=0; echo "  extra: a directory must be copied as src/. into dst/"; }
+grep -qF 'cp -rp content/. "$STAGE/content/"' <<<"$src" \
+  || { ok=0; echo "  seed: content must be copied as content/. into content/"; }
+# The shapes that caused it. Neither may come back.
+grep -qF 'cp -rp "$src" "$STAGE/$dst"' <<<"$src" \
+  && { ok=0; echo "  the nesting form is back in the extra loop"; }
+grep -qF 'cp -rp content "$STAGE/content"' <<<"$src" \
+  && { ok=0; echo "  the nesting form is back in the seed branch"; }
+# A file in `extra` is still a file — the fix must not turn backup.sh into a dir.
+grep -qF 'cp -p "$src" "$STAGE/$dst"' <<<"$src" \
+  || { ok=0; echo "  extra: a FILE must still be copied as a file"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
