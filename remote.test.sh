@@ -100,6 +100,32 @@ SOFT=true run_case "$CASE" denied 'echo never reached' 255 \
   "Permission denied (publickey)" "::error::ssh could not run the script on testapp" \
   '!blocked=1'
 
+# ── carrying a repository secret to the server ───────────────────────────────
+# The script travels as a workflow_dispatch INPUT, which every collaborator can
+# read, so the VALUE must come from a repository secret and be joined to the
+# script only here, on the runner. These cases pin the two properties that make
+# that safe: it arrives byte for byte, and it is not printed.
+CASE="APP_SECRET reaches the script, byte for byte"
+APP_SECRET="p@ss'with\"quotes \$dollars and	a tab" \
+run_case "$CASE" run 'printf "%s" "$APP_SECRET" | sha256sum | cut -c1-16' 0 \
+  "$(printf '%s' "p@ss'with\"quotes \$dollars and	a tab" | sha256sum | cut -c1-16)" \
+  "a repository secret is being passed to the script"
+
+CASE="…and the value itself is never printed"
+APP_SECRET='hunter2-do-not-print' \
+run_case "$CASE" run 'echo done' 0 'done' '!hunter2-do-not-print'
+
+# A caller that passes none must behave exactly as it did before this existed —
+# no variable, no extra line, and no announcement that would read as a secret
+# having been sent when none was.
+CASE="no APP_SECRET means nothing is prepended and nothing is said"
+run_case "$CASE" run 'echo "[${APP_SECRET:-unset}]"' 0 '[unset]' \
+  '!a repository secret is being passed'
+
+CASE="an empty APP_SECRET is the same as none"
+APP_SECRET='' run_case "$CASE" run 'echo "[${APP_SECRET:-unset}]"' 0 '[unset]' \
+  '!a repository secret is being passed'
+
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
   "__sg_remote_rc_9__ is not mine" "-- end (exit 0) --"

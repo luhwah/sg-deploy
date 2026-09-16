@@ -27,6 +27,19 @@ on:
       SG_SSH_USER:
         description: u####-xxxx@ssh.<host>
         required: true
+      # OPTIONAL, and it is how a credential reaches a server without ever being
+      # in git or in a readable workflow input. The script itself travels as a
+      # workflow_dispatch INPUT — rendered in the Actions UI, readable by every
+      # collaborator — so a secret written into the script is a secret published
+      # to all of them. A repository secret is masked everywhere it would appear
+      # in a log and is never shown among the run's inputs.
+      #
+      # `gh secret set APP_SECRET -R luhwah/<app>` puts one there, reading the
+      # value on stdin. remote.sh joins it to the script on the runner and
+      # exports it as $APP_SECRET; the script names the variable, never a value.
+      APP_SECRET:
+        description: A credential the script needs on the server, exported to it as $APP_SECRET
+        required: false
 permissions:
   contents: read
 jobs:
@@ -55,6 +68,7 @@ jobs:
           SG_SSH_USER: ${{ secrets.SG_SSH_USER }}
           KNOWN_HOSTS: ${{ vars.SG_KNOWN_HOSTS }}
           SCRIPT_B64: ${{ inputs.script_b64 }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
           SOFT_FAIL_ON_BLOCK: "true"
@@ -96,6 +110,7 @@ jobs:
           SG_SSH_USER: ${{ secrets.SG_SSH_USER }}
           KNOWN_HOSTS: ${{ vars.SG_KNOWN_HOSTS }}
           SCRIPT_B64: ${{ inputs.script_b64 }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
         run: |

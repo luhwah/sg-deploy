@@ -64,6 +64,41 @@ fi
 SCRIPT=$(mktemp)
 trap 'rm -f "$SCRIPT"' EXIT
 printf '%s' "$SCRIPT_B64" | base64 -d | tr -d '\r' > "$SCRIPT"
+
+# ── CARRYING A SECRET TO THE SERVER (2026-09-16) ─────────────────────────────
+# APP_SECRET, when the calling repo passes one, is prepended to the script as a
+# shell variable so the script can use "$APP_SECRET" without the VALUE ever
+# being in the script.
+#
+# WHY THIS IS THE ONLY SAFE ROUTE FROM A DEVELOPER'S MACHINE. The script itself
+# travels as a workflow_dispatch INPUT, which is rendered in the Actions UI and
+# readable by anyone with access to the repository — so a secret written into
+# the script is a secret published to every collaborator. A repository secret is
+# not: GitHub masks a registered secret everywhere it appears in a log, and it
+# is never shown in the run's inputs. `gh secret set` puts one there without it
+# passing through an argument or a transcript.
+#
+# IT IS BASE64 ON THE WIRE so that a value containing a quote, a newline or a
+# dollar sign arrives byte for byte — a token spliced in raw would be re-parsed
+# by the remote shell, which is both a corruption and an injection. base64's own
+# alphabet is shell-inert, so the single-quoted literal below cannot be escaped
+# out of whatever the secret contains.
+#
+# AND IT IS NEVER ECHOED. `set -x` in a caller's script would print it, so the
+# assignment is written to happen before anything the caller controls, and the
+# decoded value exists only in the remote shell's memory.
+if [ -n "${APP_SECRET:-}" ]; then
+  WITH=$(mktemp)
+  trap 'rm -f "$SCRIPT" "$WITH"' EXIT
+  {
+    printf 'APP_SECRET=$(printf %%s %s | base64 -d); export APP_SECRET\n' \
+      "'$(printf '%s' "$APP_SECRET" | base64 | tr -d '\n')'"
+    cat "$SCRIPT"
+  } > "$WITH"
+  mv "$WITH" "$SCRIPT"
+  echo "== a repository secret is being passed to the script as \$APP_SECRET (not printed) =="
+fi
+
 LINES=$(wc -l < "$SCRIPT" | tr -d ' ')
 echo "== remote: ${APP:-$(echo "$SG_SSH_USER" | cut -d@ -f2)} — $LINES line(s), one connection =="
 echo "-- output --"
