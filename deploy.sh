@@ -366,6 +366,8 @@ echo "-- connection 1 of 2: scp -> $BASE/deploy-$APP.tgz$([ -n "$LAST_PATH" ] &&
 dialed scp -P "$PORT" "${SSH_OPTS[@]}" "${UP[@]}" "$SSH_USER:$BASE/"
 
 # ── Connection 2 of 2: extract (last file last), steps, checks, lint, smoke ──
+# The engine tools this run will ask for, filled in below and reported afterwards.
+ENGINE_OPS=()
 R=$(mktemp -t remote-XXXXXX.sh)
 {
   echo 'set -e'
@@ -380,15 +382,32 @@ R=$(mktemp -t remote-XXXXXX.sh)
     echo 'rm -f "$D/index.html" "$D/Default.html"'
     echo 'chmod 600 data/config.php 2>/dev/null || true'
     echo 'sh .engine-clean.sh; rm -f .engine-clean.sh .engine-manifest'
-    [ "$MIGRATE" = true ]      && echo 'php .engine/tools/migrate.php --site="$HOME/www/$SITE"'
-    [ "$ENSURE_ADMIN" = true ] && echo 'php .engine/tools/ensure-admin.php --site="$HOME/www/$SITE" --commit'
-    if   [ "$SEED_ALL" = true ]; then echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE" --all'
-    elif [ "$SEED" = true ];     then echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE"'; fi
+    # EACH ENGINE TOOL NAMES ITSELF FOR THE SUMMARY LINE BELOW. It used to report
+    # `${#REMOTE_STEPS[@]} step(s)` alone, and these tools are not remote steps —
+    # they are a separate mechanism a few lines up — so a deploy carrying
+    # --migrate printed `0 step(s)` while a migration genuinely ran. A session
+    # read that line, believed the flag had been ignored, and went looking for a
+    # phantom (2026-09-17, aa's transcripts migration, which HAD applied). A log
+    # that undercounts what it did is worse than one that says nothing: it is
+    # believed.
+    if [ "$MIGRATE" = true ]; then
+      ENGINE_OPS+=(migrate);      echo 'php .engine/tools/migrate.php --site="$HOME/www/$SITE"'
+    fi
+    if [ "$ENSURE_ADMIN" = true ]; then
+      ENGINE_OPS+=(ensure-admin); echo 'php .engine/tools/ensure-admin.php --site="$HOME/www/$SITE" --commit'
+    fi
+    if   [ "$SEED_ALL" = true ]; then
+      ENGINE_OPS+=(seed-all);     echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE" --all'
+    elif [ "$SEED" = true ];     then
+      ENGINE_OPS+=(seed);         echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE"'
+    fi
     # --refresh REWRITES existing pages from content/ and seed.php itself refuses on a
     # site that is no longer staging — the runner adds no second gate, the engine's is
     # the one that counts. Until 2026-09-08 a recipe change on a staging site shipped
     # from GitHub and then still needed the local script (-Seed -Refresh, 2 connections).
-    [ "$SEED_REFRESH" = true ] && echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE" --refresh'
+    if [ "$SEED_REFRESH" = true ]; then
+      ENGINE_OPS+=(seed-refresh); echo 'php .engine/tools/seed.php --site="$HOME/www/$SITE" --refresh'
+    fi
   fi
   for s in "${REMOTE_STEPS[@]}"; do printf '%s\n' "$s"; done
   if [[ "$SHAPE" == webavie ]]; then
@@ -400,7 +419,8 @@ R=$(mktemp -t remote-XXXXXX.sh)
   smoke_script
 } > "$R"
 NLINT=${#PHP[@]}; { [ "$SKIP_LINT" = true ] || [ "$LINT" = none ]; } && NLINT=0
-echo "-- connection 2 of 2: extract, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks (which lint the engine)'), lint $NLINT php file(s), smoke"
+OPS_NOTE=""; [ ${#ENGINE_OPS[@]} -gt 0 ] && OPS_NOTE=", $(IFS='+'; echo "${ENGINE_OPS[*]}" | sed 's/+/ + /g')"
+echo "-- connection 2 of 2: extract$OPS_NOTE, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks (which lint the engine)'), lint $NLINT php file(s), smoke"
 dialed ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"
 rm -f "$R"
 [ -n "$DIGEST" ] && echo "engine digest $DIGEST"
