@@ -40,6 +40,17 @@ on:
       APP_SECRET:
         description: A credential the script needs on the server, exported to it as $APP_SECRET
         required: false
+      # A SECOND SLOT, because one app can need two credentials (2026-09-19).
+      # APP_SECRET is spoken for on most sites — it carries that site's Postmark
+      # server token — and the scrumrl manifest already warns in writing that a
+      # second need must "give it a differently-named secret rather than
+      # overwriting this one, or the site silently starts sending with the app's
+      # token". This is that differently-named secret, so the warning has an
+      # answer instead of only a caution. Optional: an unset one is not emitted,
+      # so no app changes behaviour by this existing.
+      APP_SECRET2:
+        description: A second credential, exported to the script as $APP_SECRET2
+        required: false
 permissions:
   contents: read
 jobs:
@@ -69,6 +80,7 @@ jobs:
           KNOWN_HOSTS: ${{ vars.SG_KNOWN_HOSTS }}
           SCRIPT_B64: ${{ inputs.script_b64 }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
+          APP_SECRET2: ${{ secrets.APP_SECRET2 }}
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
           SOFT_FAIL_ON_BLOCK: "true"
@@ -111,6 +123,7 @@ jobs:
           KNOWN_HOSTS: ${{ vars.SG_KNOWN_HOSTS }}
           SCRIPT_B64: ${{ inputs.script_b64 }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
+          APP_SECRET2: ${{ secrets.APP_SECRET2 }}
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
         run: |

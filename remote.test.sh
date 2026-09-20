@@ -126,6 +126,35 @@ CASE="an empty APP_SECRET is the same as none"
 APP_SECRET='' run_case "$CASE" run 'echo "[${APP_SECRET:-unset}]"' 0 '[unset]' \
   '!a repository secret is being passed'
 
+# ★ THE SECOND SLOT (2026-09-19). APP_SECRET is spoken for on most sites — it
+# carries that site's Postmark server token — and the scrumrl manifest already
+# warned in writing that a second need must be a differently-named secret rather
+# than an overwrite, "or the site silently starts sending with the app's token".
+# So the properties that make ONE safe are pinned for BOTH, and the case that
+# matters most is the two together: a loop that clobbered the first with the
+# second would pass every single-secret case above.
+CASE="APP_SECRET2 reaches the script, byte for byte"
+APP_SECRET2="second'one\"with \$specials	too" \
+run_case "$CASE" run 'printf "%s" "$APP_SECRET2" | sha256sum | cut -c1-16' 0 \
+  "$(printf '%s' "second'one\"with \$specials	too" | sha256sum | cut -c1-16)" \
+  "a repository secret is being passed to the script as \$APP_SECRET2"
+
+CASE="…and it is never printed either"
+APP_SECRET2='swordfish-do-not-print' \
+run_case "$CASE" run 'echo done' 0 'done' '!swordfish-do-not-print'
+
+CASE="BOTH ARRIVE, AND NEITHER CLOBBERS THE OTHER"
+APP_SECRET='first-value' APP_SECRET2='second-value' \
+run_case "$CASE" run 'echo "[$APP_SECRET|$APP_SECRET2]"' 0 '[first-value|second-value]'
+
+CASE="APP_SECRET2 alone works with no APP_SECRET set"
+APP_SECRET2='only-the-second' \
+run_case "$CASE" run 'echo "[${APP_SECRET:-unset}|$APP_SECRET2]"' 0 '[unset|only-the-second]'
+
+CASE="neither set is exactly as it was before the second slot existed"
+run_case "$CASE" run 'echo "[${APP_SECRET:-unset}|${APP_SECRET2:-unset}]"' 0 '[unset|unset]' \
+  '!a repository secret is being passed'
+
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
   "__sg_remote_rc_9__ is not mine" "-- end (exit 0) --"

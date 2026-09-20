@@ -87,17 +87,31 @@ printf '%s' "$SCRIPT_B64" | base64 -d | tr -d '\r' > "$SCRIPT"
 # AND IT IS NEVER ECHOED. `set -x` in a caller's script would print it, so the
 # assignment is written to happen before anything the caller controls, and the
 # decoded value exists only in the remote shell's memory.
-if [ -n "${APP_SECRET:-}" ]; then
+#
+# ★ AND THERE ARE TWO SLOTS, BECAUSE ONE APP CAN NEED TWO CREDENTIALS (2026-09-19).
+# APP_SECRET is spoken for on most sites — it carries that site's Postmark server
+# token — and the scrumrl manifest already warns in writing that a second need
+# must "give it a differently-named secret rather than overwriting this one, or
+# the site silently starts sending with the app's token". APP_SECRET2 is that
+# differently-named secret, and the warning is why it exists rather than a second
+# use being squeezed into the first.
+#
+# Both are OPTIONAL and an unset one is simply not emitted, so no app changes
+# behaviour by this existing.
+for VAR in APP_SECRET APP_SECRET2; do
+  eval "VAL=\${$VAR:-}"
+  [ -n "$VAL" ] || continue
   WITH=$(mktemp)
   trap 'rm -f "$SCRIPT" "$WITH"' EXIT
   {
-    printf 'APP_SECRET=$(printf %%s %s | base64 -d); export APP_SECRET\n' \
-      "'$(printf '%s' "$APP_SECRET" | base64 | tr -d '\n')'"
+    printf '%s=$(printf %%s %s | base64 -d); export %s\n' \
+      "$VAR" "'$(printf '%s' "$VAL" | base64 | tr -d '\n')'" "$VAR"
     cat "$SCRIPT"
   } > "$WITH"
   mv "$WITH" "$SCRIPT"
-  echo "== a repository secret is being passed to the script as \$APP_SECRET (not printed) =="
-fi
+  echo "== a repository secret is being passed to the script as \$$VAR (not printed) =="
+done
+unset VAL
 
 LINES=$(wc -l < "$SCRIPT" | tr -d ' ')
 echo "== remote: ${APP:-$(echo "$SG_SSH_USER" | cut -d@ -f2)} — $LINES line(s), one connection =="
