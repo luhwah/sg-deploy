@@ -155,6 +155,28 @@ CASE="neither set is exactly as it was before the second slot existed"
 run_case "$CASE" run 'echo "[${APP_SECRET:-unset}|${APP_SECRET2:-unset}]"' 0 '[unset|unset]' \
   '!a repository secret is being passed'
 
+# The THIRD slot (2026-09-20) carries the off-site backup credentials, which
+# reach every client's backups — so the property that matters most is the one
+# asserted last here: it is never written anywhere, only exported.
+CASE="APP_SECRET3 reaches the script, byte for byte"
+APP_SECRET3="third'one\"with \$specials	as well" \
+run_case "$CASE" run 'printf "%s" "$APP_SECRET3" | sha256sum | cut -c1-16' 0 \
+  "$(printf '%s' "third'one\"with \$specials	as well" | sha256sum | cut -c1-16)" \
+  "a repository secret is being passed to the script as \$APP_SECRET3"
+
+CASE="ALL THREE ARRIVE AT ONCE, each intact"
+APP_SECRET='one' APP_SECRET2='two' APP_SECRET3='three' \
+run_case "$CASE" run 'echo "[$APP_SECRET|$APP_SECRET2|$APP_SECRET3]"' 0 '[one|two|three]'
+
+CASE="the third alone works with the other two unset"
+APP_SECRET3='only-the-third' \
+run_case "$CASE" run 'echo "[${APP_SECRET:-unset}|${APP_SECRET2:-unset}|$APP_SECRET3]"' 0 \
+  '[unset|unset|only-the-third]'
+
+CASE="…and the third is never printed either"
+APP_SECRET3='haddock-do-not-print' \
+run_case "$CASE" run 'echo done' 0 'done' '!haddock-do-not-print'
+
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
   "__sg_remote_rc_9__ is not mine" "-- end (exit 0) --"

@@ -88,17 +88,26 @@ printf '%s' "$SCRIPT_B64" | base64 -d | tr -d '\r' > "$SCRIPT"
 # assignment is written to happen before anything the caller controls, and the
 # decoded value exists only in the remote shell's memory.
 #
-# ★ AND THERE ARE TWO SLOTS, BECAUSE ONE APP CAN NEED TWO CREDENTIALS (2026-09-19).
+# ★ AND THERE ARE THREE SLOTS, BECAUSE ONE SITE GENUINELY NEEDS THREE (2026-09-19/20).
 # APP_SECRET is spoken for on most sites — it carries that site's Postmark server
-# token — and the scrumrl manifest already warns in writing that a second need
+# token — and the scrumrl manifest already warned in writing that a second need
 # must "give it a differently-named secret rather than overwriting this one, or
-# the site silently starts sending with the app's token". APP_SECRET2 is that
-# differently-named secret, and the warning is why it exists rather than a second
-# use being squeezed into the first.
+# the site silently starts sending with the app's token". APP_SECRET2 answered
+# that (the daily Google-reviews key), and APP_SECRET3 arrived the next day for
+# the off-site backup credentials.
 #
-# Both are OPTIONAL and an unset one is simply not emitted, so no app changes
-# behaviour by this existing.
-for VAR in APP_SECRET APP_SECRET2; do
+# ★ THE THIRD ONE IS WHAT MAKES THE BACKUP DESIGN WORK AT ALL, so it is worth
+# saying why rather than reading as slot creep. The backup uploads a client's
+# data to shared object storage, and the credential for that storage reaches
+# EVERY client's backups. Putting it in a file on ten client servers would mean
+# one compromised site could read the other nine. Passed this way it exists only
+# in the remote shell's memory for the length of one ssh and is never written to
+# a client's disk — so the credential is on the runner, not on the estate.
+#
+# All three are OPTIONAL and an unset one is simply not emitted, so no app
+# changes behaviour by these existing. If a FOURTH is ever wanted, stop and ask
+# whether the thing needing it should be running on the server at all.
+for VAR in APP_SECRET APP_SECRET2 APP_SECRET3; do
   eval "VAL=\${$VAR:-}"
   [ -n "$VAL" ] || continue
   WITH=$(mktemp)

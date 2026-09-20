@@ -51,6 +51,13 @@ on:
       APP_SECRET2:
         description: A second credential, exported to the script as $APP_SECRET2
         required: false
+      # A THIRD, for the off-site backup credentials (2026-09-20). That one
+      # credential reaches every client's backups, so it must never be written
+      # to a client server's disk — passed this way it lives only in the remote
+      # shell's memory for the length of one ssh.
+      APP_SECRET3:
+        description: A third credential, exported to the script as $APP_SECRET3
+        required: false
 permissions:
   contents: read
 jobs:
@@ -81,6 +88,7 @@ jobs:
           SCRIPT_B64: ${{ inputs.script_b64 }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
           APP_SECRET2: ${{ secrets.APP_SECRET2 }}
+          APP_SECRET3: ${{ secrets.APP_SECRET3 }}
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
           SOFT_FAIL_ON_BLOCK: "true"
@@ -124,6 +132,7 @@ jobs:
           SCRIPT_B64: ${{ inputs.script_b64 }}
           APP_SECRET: ${{ secrets.APP_SECRET }}
           APP_SECRET2: ${{ secrets.APP_SECRET2 }}
+          APP_SECRET3: ${{ secrets.APP_SECRET3 }}
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
         run: |
