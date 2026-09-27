@@ -316,7 +316,12 @@ cd "$(dirname "$0")" || exit 0
 [ -s .engine-manifest ] || { echo "  (no manifest - stale check skipped)"; exit 0; }
 n=$(wc -l < .engine-manifest)
 [ "$n" -ge 30 ] || { echo "  (manifest has only $n entries - refusing to delete anything)"; exit 0; }
-cd public_html || exit 0
+# The docroot is an ARGUMENT, because it is not always public_html (2026-09-26):
+# luhwah.com lands its webavie site in public_html/site beside a WordPress install
+# that keeps the root. With `cd public_html` hardcoded the sweep looked in the
+# wrong directory, found no lib/lws, and skipped silently — and every stale engine
+# file then made the next release's digest check fail as "NOT THE ONE JUST BUILT".
+cd "${1:-public_html}" || exit 0
 for owned in lib/lws assets/lws; do
   [ -d "$owned" ] || continue
   find "$owned" -type f | while read -r f; do
@@ -381,7 +386,7 @@ R=$(mktemp -t remote-XXXXXX.sh)
   if [[ "$SHAPE" == webavie ]]; then
     echo 'rm -f "$D/index.html" "$D/Default.html"'
     echo 'chmod 600 data/config.php 2>/dev/null || true'
-    echo 'sh .engine-clean.sh; rm -f .engine-clean.sh .engine-manifest'
+    echo 'sh .engine-clean.sh "$D"; rm -f .engine-clean.sh .engine-manifest'
     # EACH ENGINE TOOL NAMES ITSELF FOR THE SUMMARY LINE BELOW. It used to report
     # `${#REMOTE_STEPS[@]} step(s)` alone, and these tools are not remote steps —
     # they are a separate mechanism a few lines up — so a deploy carrying
