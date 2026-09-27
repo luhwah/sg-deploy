@@ -321,11 +321,21 @@ n=$(wc -l < .engine-manifest)
 # that keeps the root. With `cd public_html` hardcoded the sweep looked in the
 # wrong directory, found no lib/lws, and skipped silently — and every stale engine
 # file then made the next release's digest check fail as "NOT THE ONE JUST BUILT".
+#
+# ★ THE MANIFEST PATH IS ABSOLUTE, AND THAT IS NOT STYLE. The first nested-docroot
+# run kept a relative `../.engine-manifest` after the cd, which one directory
+# deeper named a file that did not exist — so grep failed on EVERY line, and
+# "not in the manifest" and "cannot read the manifest" being the same exit code,
+# the sweep deleted the entire engine it had just deployed (luhwah.com,
+# 2026-09-27, caught by the digest check on the same run). A missing manifest at
+# this point must mean "delete nothing", never "delete everything".
+M="$PWD/.engine-manifest"
 cd "${1:-public_html}" || exit 0
+[ -r "$M" ] || { echo "  (manifest unreadable from the docroot - stale check skipped)"; exit 0; }
 for owned in lib/lws assets/lws; do
   [ -d "$owned" ] || continue
   find "$owned" -type f | while read -r f; do
-    grep -qxF "$f" ../.engine-manifest || { rm -f "$f" && echo "  removed stale: $f"; }
+    grep -qxF "$f" "$M" || { rm -f "$f" && echo "  removed stale: $f"; }
   done
 done
 exit 0

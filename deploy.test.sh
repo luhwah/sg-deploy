@@ -143,6 +143,42 @@ grep -qF 'cp -p "$src" "$STAGE/$dst"' <<<"$src" \
   || { ok=0; echo "  extra: a FILE must still be copied as a file"; }
 if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; fi
 
+# ── THE STALE-ENGINE SWEEP MUST FIND ITS MANIFEST FROM A NESTED DOCROOT ──────
+#
+# luhwah.com lands its webavie site in public_html/site beside a WordPress install
+# that keeps the root (2026-09-26). The sweep took the docroot as an argument and
+# kept a RELATIVE `../.engine-manifest` after the cd — one directory deeper that
+# named a file that did not exist, grep failed on every line, and the sweep
+# deleted the entire engine it had just deployed. The digest check caught it on
+# the same run; nothing was routed to the site yet, so nobody saw it.
+#
+# Run the REAL script text (extracted from deploy.sh's heredoc) against a fixture:
+# nested and flat, with an argument and without. A listed file must survive, an
+# unlisted one must go, and a manifest the docroot cannot reach must delete nothing.
+CASE="the stale-engine sweep keeps what the manifest lists, from a nested docroot too"
+ok=1
+SWEEP="$WORK/sweep"; mkdir -p "$SWEEP"
+awk '/cat > "\$STAGE\/\.engine-clean\.sh" <<.EOS./{on=1; next} /^EOS$/{on=0} on{print}' "$HERE/deploy.sh" > "$SWEEP/.engine-clean.sh"
+[ -s "$SWEEP/.engine-clean.sh" ] || { ok=0; echo "  could not extract .engine-clean.sh from deploy.sh"; }
+fixture() { # $1 docroot-relative dir
+  rm -rf "$SWEEP/public_html"; mkdir -p "$SWEEP/$1/lib/lws" "$SWEEP/$1/assets/lws"
+  : > "$SWEEP/.engine-manifest"
+  local i; for i in $(seq 1 31); do printf 'lib/lws/keep%s.php\n' "$i" >> "$SWEEP/.engine-manifest"; : > "$SWEEP/$1/lib/lws/keep$i.php"; done
+  : > "$SWEEP/$1/lib/lws/stale.php"; : > "$SWEEP/$1/assets/lws/stale.css"
+}
+verify() { # $1 docroot-relative dir  $2 label
+  [ -f "$SWEEP/$1/lib/lws/keep1.php" ] && [ -f "$SWEEP/$1/lib/lws/keep31.php" ] || { ok=0; echo "  $2: a LISTED engine file was deleted"; }
+  [ ! -f "$SWEEP/$1/lib/lws/stale.php" ] && [ ! -f "$SWEEP/$1/assets/lws/stale.css" ] || { ok=0; echo "  $2: a stale file survived"; }
+}
+fixture public_html/site;  sh "$SWEEP/.engine-clean.sh" public_html/site >/dev/null 2>&1; verify public_html/site "nested, with argument"
+fixture public_html;       sh "$SWEEP/.engine-clean.sh" public_html      >/dev/null 2>&1; verify public_html      "flat, with argument"
+fixture public_html;       sh "$SWEEP/.engine-clean.sh"                  >/dev/null 2>&1; verify public_html      "flat, default argument"
+# No manifest at all: nothing may be deleted, listed or not.
+fixture public_html/site; rm -f "$SWEEP/.engine-manifest"
+sh "$SWEEP/.engine-clean.sh" public_html/site >/dev/null 2>&1
+[ -f "$SWEEP/public_html/site/lib/lws/keep1.php" ] && [ -f "$SWEEP/public_html/site/lib/lws/stale.php" ] || { ok=0; echo "  no manifest: something was deleted"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
