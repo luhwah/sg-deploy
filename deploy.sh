@@ -28,6 +28,7 @@
 #   last          "api.php"              docroot-relative file extracted LAST (a router must
 #                                         never require() a handler that is not there yet;
 #                                         a service worker must never see stale assets)
+#   tagPrefix     "app-"                 this app's own release series (app-v1.2.3); default plain v*
 #   versionJson   true                   write {"version":"<nearest tag>"} into the docroot
 #                                         root; false for apps whose version.json is their own
 #   stageScript   "tools/stage.sh"       repo script run after staging, before the tar:
@@ -252,7 +253,13 @@ if [ ${#MAP[@]} -gt 0 ]; then
 fi
 [ ${#CAND[@]} -gt 0 ] || { echo "::error::nothing selected to ship — check srcDir/include/extraDirs against git ls-files"; exit 1; }
 
-TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
+# The release tag nearest HEAD, in THIS app's series: `tagPrefix` (e.g. "app-") when
+# two apps share a repo and each has its own tags (scrumrl), else plain v*. The chip
+# shows the version without the prefix. --match also keeps a stray tag of another
+# shape (lindston-v…, a backup tag) from being published as this app's version.
+TAG_PREFIX=$(J '.tagPrefix // ""' "$M")
+TAG=$(git describe --tags --abbrev=0 --match "${TAG_PREFIX}v[0-9]*" 2>/dev/null || true)
+[ -n "$TAG_PREFIX" ] && TAG="${TAG#"$TAG_PREFIX"}"
 
 # ── Staging: a mirror of www/<site>/ ─────────────────────────────────────────
 STAGE=$(mktemp -d -t "stage-$APP-XXXXXX"); DST="$STAGE/$DOC"; mkdir -p "$DST"
@@ -390,8 +397,13 @@ R=$(mktemp -t remote-XXXXXX.sh)
   echo '[ -d "$HOME/www/$SITE" ] && [ ! -L "$HOME/www/$SITE" ] || { echo "::error::www/$SITE is not a real directory on this account"; exit 1; }'
   echo 'cd "$HOME/www/$SITE"'
   echo 'mkdir -p "$D"'
-  echo 'tar -xzf "deploy-$APP.tgz" && rm -f "deploy-$APP.tgz"'
-  if [ -n "$LAST_PATH" ]; then echo 'if [ -f "deploy-$APP-last.tgz" ]; then tar -xzf "deploy-$APP-last.tgz" && rm -f "deploy-$APP-last.tgz"; fi'; fi
+  # tar ON ITS OWN LINE, so `set -e` stops the run when it fails (2026-10-08). As
+  # `tar … && rm …` a failed extract was the left side of an AND list, which set -e
+  # deliberately ignores: the run printed "extracted into", ran the steps, the
+  # checks and the smoke against whatever was there before, and went green.
+  echo 'tar -xzf "deploy-$APP.tgz"'
+  echo 'rm -f "deploy-$APP.tgz"'
+  if [ -n "$LAST_PATH" ]; then echo 'if [ -f "deploy-$APP-last.tgz" ]; then tar -xzf "deploy-$APP-last.tgz"; rm -f "deploy-$APP-last.tgz"; fi'; fi
   echo 'echo "extracted into $HOME/www/$SITE"'
   if [[ "$SHAPE" == webavie ]]; then
     echo 'rm -f "$D/index.html" "$D/Default.html"'
@@ -428,7 +440,11 @@ R=$(mktemp -t remote-XXXXXX.sh)
   if [[ "$SHAPE" == webavie ]]; then
     printf 'echo ""; set +e; sh .engine/deploy-checks.sh --site="$HOME/www/$SITE" --domain="$SITE" --docroot="$D" --engine-digest=%q%s | tee .deploy-checks.out; set -e\n' "$DIGEST" "$([ "$STAGING" = true ] && echo ' --staging')"
     echo 'rm -f .engine/deploy-checks.sh'
-    echo 'if grep -q "PROBLEM(S)" .deploy-checks.out; then rm -f .deploy-checks.out; echo "::error::the deploy checks reported problems — the files are deployed; fix and deploy again"; exit 1; fi; rm -f .deploy-checks.out'
+    echo 'if grep -q "PROBLEM(S)" .deploy-checks.out; then rm -f .deploy-checks.out; echo "::error::the deploy checks reported problems — the files are deployed; fix and deploy again"; exit 1; fi'
+    # …AND A RUN THAT NEVER SAID IT PASSED HAS NOT PASSED (2026-10-08). A checks
+    # script that died part-way (a PHP fatal, a missing file, a killed process)
+    # printed neither line, and "no PROBLEM line" read as success.
+    echo 'if ! grep -q "all deploy checks passed" .deploy-checks.out; then rm -f .deploy-checks.out; echo "::error::the deploy checks did not finish (no \"all deploy checks passed\" line) — the files are deployed; read the output above"; exit 1; fi; rm -f .deploy-checks.out'
   fi
   if [ "$SKIP_LINT" != true ] && [ "$LINT" != none ]; then for f in "${PHP[@]}"; do printf 'php -l %q\n' "$f"; done; fi
   smoke_script

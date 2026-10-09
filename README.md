@@ -21,6 +21,7 @@ It reads a `deploy.json` in the app's directory. Only `site` is required.
 | `extra` | `{"server/backup.sh": "backup.sh"}` | repo file or dir → a destination beside the docroot (`www/<site>/<dst>`) |
 | `last` | `"api.php"` (default) | docroot-relative file extracted last — a router that must not `require()` a missing handler, a service worker that must not see stale assets |
 | `versionJson` | `true` (default) | write `{"version":"<nearest git tag>"}` into the docroot root; `false` for an app whose `version.json` is its own (an update manifest) |
+| `tagPrefix` | `"app-"` | this app's releases are its own series (`app-v1.2.3`) — for a repo where two apps would otherwise both fire on every `v*` tag. Only `<prefix>v[0-9]*` tags are read, and `version.json` shows the version without the prefix. Without it, only `v[0-9]*` tags are read |
 | `stageScript` | `"tools/stage.sh"` | repo script run after staging, before the archive; env `STAGE` (the `www/<site>` mirror), `DOCROOT_STAGE`, `TAG`, `APP`, `SITE` |
 | `remoteSteps` | `["rm -f \"$D/Default.html\"", "chmod 700 data"]` | run in `$HOME/www/<site>` after the extract, under `set -e`, before the lint; `$D` is `public_html`, `$SITE` the site |
 | `lint` | `"shipped"` (default) or `"none"` | `php -l` every shipped `.php`, or skip |

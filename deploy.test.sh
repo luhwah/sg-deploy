@@ -53,6 +53,7 @@ if [ "$mode" = refused-by-remote ]; then
   echo "::error::ping did not answer 200" >&2
   exit 1
 fi
+if [ "$mode" = capture ]; then cat > "$WORK/remote-script.sh"; exit 0; fi
 cat > /dev/null
 echo "extracted into /home/u/www/test.example.com"
 exit 0
@@ -177,6 +178,37 @@ fixture public_html;       sh "$SWEEP/.engine-clean.sh"                  >/dev/n
 fixture public_html/site; rm -f "$SWEEP/.engine-manifest"
 sh "$SWEEP/.engine-clean.sh" public_html/site >/dev/null 2>&1
 [ -f "$SWEEP/public_html/site/lib/lws/keep1.php" ] && [ -f "$SWEEP/public_html/site/lib/lws/stale.php" ] || { ok=0; echo "  no manifest: something was deleted"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; fi
+
+# ── A FAILED EXTRACT STOPS THE RUN (2026-10-08) ──────────────────────────────
+#
+# The server script runs under `set -e`, and it said `tar -xzf … && rm -f …`. A
+# failure on the LEFT of && is exempt from set -e, so a corrupt or truncated
+# archive printed "extracted into", ran every step, the checks and the smoke
+# against the PREVIOUS release, and the job went green. Proven on the real script
+# deploy.sh hands to ssh: captured, then run with a `tar` that fails.
+CASE="a failed extract stops the server script before anything claims success"
+ok=1
+make_stubs capture
+rm -f "$WORK/remote-script.sh"
+( cd "$APP" && SSH_KEY_FILE="$APP/deploy.json" SG_SSH_USER=u1234-abcd@ssh.test.example.com APP=testapp \
+    PATH="$STUB:$PATH" bash "$HERE/deploy.sh" >/dev/null 2>&1 )
+[ -s "$WORK/remote-script.sh" ] || { ok=0; echo "  the remote script was not captured"; }
+FAKEHOME="$WORK/home"; mkdir -p "$FAKEHOME/www/test.example.com" "$WORK/badtar"
+: > "$FAKEHOME/www/test.example.com/deploy-testapp.tgz"
+printf '#!/usr/bin/env bash\necho "tar: unexpected end of file" >&2\nexit 2\n' > "$WORK/badtar/tar"; chmod +x "$WORK/badtar/tar"
+rout=$(HOME="$FAKEHOME" PATH="$WORK/badtar:$PATH" bash "$WORK/remote-script.sh" 2>&1); rrc=$?
+[ "$rrc" != 0 ] || { ok=0; echo "  the server script exited 0 after tar failed"; }
+grep -qF "extracted into" <<<"$rout" && { ok=0; echo "  it still printed 'extracted into' after tar failed"; }
+[ -f "$FAKEHOME/www/test.example.com/deploy-testapp.tgz" ] || { ok=0; echo "  the archive was deleted although it never extracted"; }
+grep -qE 'tar -xzf "deploy-\$APP(-last)?\.tgz" &&' "$HERE/deploy.sh" && { ok=0; echo "  the 'tar … &&' form is back"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; echo "$rout" | sed 's/^/     | /'; fi
+
+# ── A CHECKS RUN THAT NEVER SAID IT PASSED HAS NOT PASSED (2026-10-08) ─────
+CASE="the webavie gate fails when the 'all deploy checks passed' line is missing"
+ok=1
+grep -qF 'if ! grep -q "all deploy checks passed" .deploy-checks.out' "$HERE/deploy.sh" \
+  || { ok=0; echo "  deploy.sh no longer requires the success line"; }
 if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; fi
 
 echo
