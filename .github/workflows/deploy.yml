@@ -4,6 +4,11 @@
 # time. The deploy logic lives in ../../deploy.sh via the composite action at the
 # repo root.
 #
+# Server READS (remote.yml) are deliberately NOT in this group since 2026-10-14
+# (DECISIONS 115): GitHub holds one pending run per group and a newer one replaces
+# it, so a read fired while a deploy was waiting used to cancel the deploy. Reads
+# queue in sg-remote-<repo>-<dir> instead.
+#
 # Why this exists (2026-09-07): every SiteGround connection used to leave one
 # developer machine — a shared Starlink CGNAT address that was firewall-blocked
 # three times — and then one static jump host, rationed to 15 connections an hour.
@@ -26,7 +31,7 @@ on:
         type: boolean
         default: false
       skip_lint:
-        description: Skip the server-side php -l sweep
+        description: Skip both php -l passes (the runner's before upload, the server's before the switch)
         type: boolean
         default: false
       migrate:

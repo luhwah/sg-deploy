@@ -32,7 +32,7 @@ inputs:
     required: false
     default: "false"
   skip-lint:
-    description: Skip the server-side php -l sweep
+    description: Skip both php -l passes (the runner's before upload, the server's before the switch)
     required: false
     default: "false"
   migrate:

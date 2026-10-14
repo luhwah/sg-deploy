@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # sg-deploy/deploy.sh — a two-connection SiteGround deploy, run FROM A GITHUB RUNNER.
 #
-# Reads deploy.json in the current directory and ships what git tracks. Two
-# connections: one scp of the archive(s), one ssh that extracts, runs the manifest's
-# server-side steps, lints every shipped PHP file and smoke-tests. The smoke test is a
-# GATE: the job fails if the ping is not 200 or a canary answers 200.
+# Reads deploy.json in the current directory and ships what git tracks. Every staged
+# .php file is linted ON THE RUNNER first; a syntax error stops the run with nothing
+# uploaded. Then two connections: one scp of the archive(s), one ssh that lints the
+# archive again with the HOST's php on an unpacked scratch copy (nothing switched
+# yet), keeps ONE spare copy of the release that is live now, extracts, runs the
+# manifest's server-side steps and smoke-tests. The smoke test is a GATE: the job
+# fails if the ping is not 200 or a canary answers 200 — and since 2026-10-14
+# (DECISIONS 115) any failure after the extract puts the spare back by itself and
+# ends the job red with "ROLLED BACK" in the log. The spare holds only the paths the
+# archive writes (code); data, uploads and the database are never in it or touched.
 #
 # deploy.json — every key but `site` is optional:
 #   site          "app.example.com"      remote base www/<site>, docroot www/<site>/public_html
@@ -35,7 +41,9 @@
 #                                         env STAGE (the www/<site> mirror), DOCROOT_STAGE, TAG
 #   remoteSteps   ["rm -f public_html/Default.html", ...]  run in $HOME/www/<site> after the
 #                                         extract, under set -e, before the lint; $D = public_html
-#   lint          "shipped" | "none"     php -l every shipped .php (default) or skip
+#   lint          "shipped" | "none"     the SERVER's php -l of every shipped .php, on an unpacked
+#                                         copy before the switch (default), or skip it. The runner's
+#                                         pre-upload lint always runs (only --skip-lint skips it)
 #   pingPath      "api.php?resource=health&op=ping"  smoke URL path (cb= appended); or
 #   pingResource  "ping"                 legacy: api.php?resource=<this>
 #   canaryPath    "data/settings.json"   must NOT answer 200 (the leak check)
@@ -117,7 +125,11 @@ mapfile -t CANARIES < <(J '.canaries[]? // empty' "$M")
 CANARY=$(J '.canaryPath // empty' "$M")
 if [ -z "$CANARY" ]; then if [[ "$SHAPE" == webavie ]]; then CANARY=data/config.php; else CANARY=data/settings.json; fi; fi
 CANARIES=("$CANARY" "${CANARIES[@]}")
-[[ "$SHAPE" == webavie ]] && { CANARIES+=(lib/lws/site.php); SRC_DIR=public; LINT=none; }
+# webavie used to force LINT=none here because deploy-checks.sh lints the engine —
+# but only AFTER the extract, i.e. on the live tree. Since 2026-10-14 (DECISIONS 115)
+# the server lint runs on an unpacked copy BEFORE anything is switched, so webavie
+# takes it too.
+[[ "$SHAPE" == webavie ]] && { CANARIES+=(lib/lws/site.php); SRC_DIR=public; }
 
 CB="$RANDOM$RANDOM"
 if   [ -n "$PING_PATH" ]; then PING_URL="https://$SITE/$PING_PATH$([[ "$PING_PATH" == *\?* ]] && echo '&' || echo '?')cb=$CB"
@@ -357,7 +369,6 @@ fi
 
 mapfile -t ENTRIES < <(cd "$STAGE" && find . -type f | sed 's#^\./##' | LC_ALL=C sort)
 LAST_PATH=""; [ -n "$LAST" ] && [ -f "$STAGE/$DOC/$LAST" ] && LAST_PATH="$DOC/$LAST"
-PHP=(); for e in "${ENTRIES[@]}"; do [[ "$e" == "$DOC"/*.php ]] && PHP+=("$e"); done
 
 # The plan, printed without the engine's 150 files (those are one line)
 n_engine=0; shown=()
@@ -370,6 +381,36 @@ for e in "${shown[@]}"; do echo "     $e"; done
 [ ${#REMOTE_STEPS[@]} -gt 0 ] && { echo "remote steps:"; for s in "${REMOTE_STEPS[@]}"; do echo "     $s"; done; }
 echo "ping   $PING_URL"
 for c in "${CANARIES[@]}"; do echo "canary https://$SITE/$c  (must NOT answer 200)"; done
+
+# ── LINT ON THE RUNNER, BEFORE ANYTHING IS UPLOADED (DECISIONS 115, 2026-10-14) ─
+# Until this existed a PHP syntax error was found by `php -l` on the SERVER, after
+# the extract — i.e. once the broken file was already live — and the site stayed
+# broken until somebody deployed again. Every staged .php file (docroot, `extra`,
+# .engine) is linted here, and one failure stops the run with nothing uploaded.
+# The runner's PHP is not the host's; the server lints again, with ITS php, on an
+# unpacked copy before switching (below) — this pass is the cheap, zero-upload one.
+# Runs in a dry run too, so `ship.mjs <app> --dry-run` proves a tree lints.
+# `--skip-lint` skips both passes; deploy.json `"lint": "none"` only the server's.
+mapfile -t STAGED_PHP < <(cd "$STAGE" && find . -type f -name '*.php' | sed 's#^\./##' | LC_ALL=C sort)
+if [ "$SKIP_LINT" = true ]; then
+  echo "lint   SKIPPED (--skip-lint) — neither the runner nor the server checks PHP syntax this run"
+elif [ ${#STAGED_PHP[@]} -eq 0 ]; then
+  echo "lint   no php files staged"
+elif ! command -v php >/dev/null 2>&1; then
+  echo "::warning::no php on this runner — the pre-upload lint is skipped; the server still lints before switching"
+else
+  RPV=$(php -n -r 'echo PHP_VERSION;' 2>/dev/null || echo '?')
+  LOUT=$(mktemp -t lint-XXXXXX.log)
+  if (cd "$STAGE" && printf '%s\0' "${STAGED_PHP[@]}" | xargs -0 -n1 -P4 php -n -l > "$LOUT" 2>&1); then
+    echo "lint   runner PHP $RPV: ${#STAGED_PHP[@]} php file(s), no syntax errors"
+    rm -f "$LOUT"
+  else
+    grep -v '^No syntax errors detected' "$LOUT" | grep -v '^[[:space:]]*$' | sed 's/^/lint: /'
+    rm -f "$LOUT"
+    echo "::error::PHP LINT FAILED on the runner (PHP $RPV) — NOTHING was uploaded and the live site is untouched. Fix the file(s) named above and ship again."
+    exit 1
+  fi
+fi
 
 if [ "$DRY_RUN" = true ]; then echo "dry run: nothing transferred, nothing connected"; exit 0; fi
 
@@ -397,6 +438,99 @@ R=$(mktemp -t remote-XXXXXX.sh)
   echo '[ -d "$HOME/www/$SITE" ] && [ ! -L "$HOME/www/$SITE" ] || { echo "::error::www/$SITE is not a real directory on this account"; exit 1; }'
   echo 'cd "$HOME/www/$SITE"'
   echo 'mkdir -p "$D"'
+  printf 'PING_URL=%q\n' "$PING_URL"
+  # ── 1. LINT WITH THE HOST'S OWN php, ON AN UNPACKED COPY, BEFORE THE SWITCH ──
+  # (DECISIONS 115, 2026-10-14.) The runner already linted with ITS php; this pass
+  # is the host's version, and it runs where nothing is live yet: the archive is
+  # unpacked into a scratch dir beside the docroot, linted, and thrown away. A
+  # failure deletes the archive and exits with the live tree untouched. It replaces
+  # the old post-extract lint, which could only report a broken file once it was
+  # already serving.
+  if [ "$SKIP_LINT" != true ] && [ "$LINT" != none ]; then
+    cat <<'EOLINT'
+NEXT=".deploy-next-$APP"; rm -rf "$NEXT"; mkdir "$NEXT"
+tar -xzf "deploy-$APP.tgz" -C "$NEXT"
+if [ -f "deploy-$APP-last.tgz" ]; then tar -xzf "deploy-$APP-last.tgz" -C "$NEXT"; fi
+HPV=$(php -r 'echo PHP_VERSION;' 2>/dev/null || echo '?')
+NPHP=$(cd "$NEXT" && find . -type f -name '*.php' | wc -l | tr -d ' ')
+set +e
+LOUT=$(cd "$NEXT" && find . -type f -name '*.php' -print0 | xargs -0 -r -n1 -P4 php -l 2>&1); LRC=$?
+set -e
+rm -rf "$NEXT"
+if [ "$LRC" != 0 ]; then
+  printf '%s\n' "$LOUT" | grep -v '^No syntax errors detected' | grep -v '^[[:space:]]*$' | sed 's/^/lint: /'
+  rm -f "deploy-$APP.tgz" "deploy-$APP-last.tgz"
+  echo "::error::PHP LINT FAILED on the server (PHP $HPV) — NOTHING was switched and the live site is untouched"
+  exit 1
+fi
+echo "lint   server PHP $HPV: $NPHP php file(s), no syntax errors — checked before anything was switched"
+EOLINT
+  fi
+  # ── 2. ONE SPARE COPY OF THE RELEASE THAT IS LIVE NOW (DECISIONS 115) ────────
+  # Extraction OVERLAYS — it never empties a directory — so the "previous release"
+  # is exactly the current version of every path this archive is about to write,
+  # plus (webavie) the two engine-owned dirs whole, because the stale-file sweep
+  # deletes from those. Those files go into ONE tarball, .deploy-spare-<app>/,
+  # beside the docroot (never web-served), and the paths that do not exist yet are
+  # listed so a rollback can remove them. Replaced on every deploy: exactly one
+  # spare, never a pile. Per APP, not per site, because three repos publish into
+  # wishmilk.com's one docroot.
+  #
+  # WHAT IS NOT IN IT, ON PURPOSE: anything the archive does not carry — data/,
+  # uploads, stores, config, the database. A rollback restores CODE and never
+  # touches client data; a migration that ran is not undone.
+  cat <<'EOSPARE'
+SPARE=".deploy-spare-$APP"; SPN="$SPARE.new"; rm -rf "$SPN"; mkdir -p "$SPN"
+{ tar -tzf "deploy-$APP.tgz"; if [ -f "deploy-$APP-last.tgz" ]; then tar -tzf "deploy-$APP-last.tgz"; fi; } > "$SPN/touch.list"
+EOSPARE
+  if [[ "$SHAPE" == webavie ]]; then
+    echo 'for d in "$D/lib/lws" "$D/assets/lws"; do if [ -d "$d" ]; then find "$d" -type f; fi; done >> "$SPN/touch.list"'
+  fi
+  cat <<'EOSPARE'
+grep -v '/$' "$SPN/touch.list" | sed 's#^\./##' | LC_ALL=C sort -u > "$SPN/all.list"
+: > "$SPN/have.list"; : > "$SPN/new.list"
+while IFS= read -r f; do
+  if [ -e "$f" ] || [ -L "$f" ]; then printf '%s\n' "$f" >> "$SPN/have.list"; else printf '%s\n' "$f" >> "$SPN/new.list"; fi
+done < "$SPN/all.list"
+if [ -s "$SPN/have.list" ]; then tar -czf "$SPN/files.tgz" --no-recursion -T "$SPN/have.list"; fi
+rm -f "$SPN/touch.list" "$SPN/all.list"
+rm -rf "$SPARE"; mv "$SPN" "$SPARE"
+echo "spare  the release live before this deploy: $(wc -l < "$SPARE/have.list" | tr -d ' ') file(s) kept in www/$SITE/$SPARE, $(wc -l < "$SPARE/new.list" | tr -d ' ') new this deploy (one spare, replaced every deploy)"
+EOSPARE
+  # ── 3. THE SWITCH, AND THE WAY BACK ──────────────────────────────────────────
+  # From the first byte extracted, ANY failure — the extract, a remote step, the
+  # engine's deploy checks, the ping, a canary — exits through on_exit, which puts
+  # the spare back, re-pings, and ends the job red with "ROLLED BACK" in the log.
+  cat <<'EOROLL'
+SWITCHED=0; DONE=0
+rollback() {
+  set +e
+  echo ""
+  echo "!! the deploy failed after the switch — restoring the previous release from www/$SITE/$SPARE"
+  nnew=0
+  while IFS= read -r f; do [ -n "$f" ] || continue; rm -f "$f" && nnew=$((nnew+1)); done < "$SPARE/new.list"
+  if [ -f "$SPARE/files.tgz" ]; then tar -xzpf "$SPARE/files.tgz" || echo "::error::restoring the spare reported an error — read the line above"; fi
+  rm -f .deploy-checks.out "deploy-$APP.tgz" "deploy-$APP-last.tgz"
+  echo "ROLLED BACK: $(wc -l < "$SPARE/have.list" | tr -d ' ') file(s) restored, $nnew file(s) this deploy added removed. Code only — data, uploads and the database were not touched (a migration that ran is NOT undone)."
+  P2=$(curl -s -o /dev/null -m 20 -w "%{http_code}" "$PING_URL")
+  echo "after rollback: ping HTTP $P2  $PING_URL"
+  for vf in "$HOME/www/$SITE/$D/version.json" "$HOME/www/$SITE/$D/public/version.json"; do
+    if [ -f "$vf" ]; then echo "after rollback: version on disk $(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$vf" | head -1)"; break; fi
+  done
+}
+on_exit() {
+  rc=$?
+  trap - EXIT
+  if [ "$SWITCHED" = 1 ] && [ "$DONE" != 1 ]; then
+    rollback
+    echo "::error::DEPLOY FAILED AND WAS ROLLED BACK — the previous release is live again; nothing from this run is serving. Read the failure above the '!!' line."
+    [ "$rc" = 0 ] && rc=1
+  fi
+  exit "$rc"
+}
+trap on_exit EXIT
+SWITCHED=1
+EOROLL
   # tar ON ITS OWN LINE, so `set -e` stops the run when it fails (2026-10-08). As
   # `tar … && rm …` a failed extract was the left side of an AND list, which set -e
   # deliberately ignores: the run printed "extracted into", ran the steps, the
@@ -440,18 +574,19 @@ R=$(mktemp -t remote-XXXXXX.sh)
   if [[ "$SHAPE" == webavie ]]; then
     printf 'echo ""; set +e; sh .engine/deploy-checks.sh --site="$HOME/www/$SITE" --domain="$SITE" --docroot="$D" --engine-digest=%q%s | tee .deploy-checks.out; set -e\n' "$DIGEST" "$([ "$STAGING" = true ] && echo ' --staging')"
     echo 'rm -f .engine/deploy-checks.sh'
-    echo 'if grep -q "PROBLEM(S)" .deploy-checks.out; then rm -f .deploy-checks.out; echo "::error::the deploy checks reported problems — the files are deployed; fix and deploy again"; exit 1; fi'
+    echo 'if grep -q "PROBLEM(S)" .deploy-checks.out; then rm -f .deploy-checks.out; echo "::error::the deploy checks reported problems — rolling back to the previous release"; exit 1; fi'
     # …AND A RUN THAT NEVER SAID IT PASSED HAS NOT PASSED (2026-10-08). A checks
     # script that died part-way (a PHP fatal, a missing file, a killed process)
     # printed neither line, and "no PROBLEM line" read as success.
-    echo 'if ! grep -q "all deploy checks passed" .deploy-checks.out; then rm -f .deploy-checks.out; echo "::error::the deploy checks did not finish (no \"all deploy checks passed\" line) — the files are deployed; read the output above"; exit 1; fi; rm -f .deploy-checks.out'
+    echo 'if ! grep -q "all deploy checks passed" .deploy-checks.out; then rm -f .deploy-checks.out; echo "::error::the deploy checks did not finish (no \"all deploy checks passed\" line) — rolling back to the previous release"; exit 1; fi; rm -f .deploy-checks.out'
   fi
-  if [ "$SKIP_LINT" != true ] && [ "$LINT" != none ]; then for f in "${PHP[@]}"; do printf 'php -l %q\n' "$f"; done; fi
   smoke_script
+  # Reached only when every gate above passed: the trap then leaves the release be.
+  echo 'DONE=1'
 } > "$R"
-NLINT=${#PHP[@]}; { [ "$SKIP_LINT" = true ] || [ "$LINT" = none ]; } && NLINT=0
+SLINT="server lint (host php) before the switch"; { [ "$SKIP_LINT" = true ] || [ "$LINT" = none ]; } && SLINT="no server lint"
 OPS_NOTE=""; [ ${#ENGINE_OPS[@]} -gt 0 ] && OPS_NOTE=", $(IFS='+'; echo "${ENGINE_OPS[*]}" | sed 's/+/ + /g')"
-echo "-- connection 2 of 2: extract$OPS_NOTE, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks (which lint the engine)'), lint $NLINT php file(s), smoke"
+echo "-- connection 2 of 2: $SLINT, spare, extract$OPS_NOTE, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks'), smoke — any failure after the switch restores the spare"
 dialed ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"
 rm -f "$R"
 [ -n "$DIGEST" ] && echo "engine digest $DIGEST"

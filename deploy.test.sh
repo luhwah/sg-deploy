@@ -47,7 +47,13 @@ case "$mode" in
     echo "u1234-abcd@ssh.test.example.com: Permission denied (publickey)." >&2
     exit 255 ;;
 esac
-if [ "\$(basename "\$0")" = scp ]; then exit 0; fi
+if [ "\$(basename "\$0")" = scp ]; then
+  # upload mode keeps what would have gone up, so the server half can run for real
+  if [ "$mode" = upload ]; then mkdir -p "$WORK/up"; for a in "\$@"; do case "\$a" in *.tgz) cp "\$a" "$WORK/up/" ;; esac; done; fi
+  : > "$WORK/scp-called"
+  exit 0
+fi
+if [ "$mode" = upload ]; then cat > "$WORK/remote-script.sh"; exit 0; fi
 # The ssh stub runs the remote script the way the remote login shell would.
 if [ "$mode" = refused-by-remote ]; then
   echo "::error::ping did not answer 200" >&2
@@ -210,6 +216,103 @@ ok=1
 grep -qF 'if ! grep -q "all deploy checks passed" .deploy-checks.out' "$HERE/deploy.sh" \
   || { ok=0; echo "  deploy.sh no longer requires the success line"; }
 if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; fi
+
+# ── DECISIONS 115 (2026-10-14): LINT BEFORE UPLOAD, ONE SPARE, ROLL BACK ON FAILURE ──
+#
+# A second app WITH the server lint on, so both lint passes are exercised. Uses the
+# real php on PATH (C:\php locally, the image's PHP on a runner).
+if command -v php >/dev/null 2>&1; then
+APP2="$WORK/app2"; mkdir -p "$APP2"
+( cd "$APP2" && git init -q . && git config user.email t@example.com && git config user.name test && git config core.autocrlf false
+  printf '<?php echo "NEW";\n' > index.php
+  printf '<?php echo "added by this release";\n' > added.php
+  printf '{"site":"test.example.com","include":["*.php"]}\n' > deploy.json
+  git add -A && git commit -qm init )
+ship2() { # run deploy.sh against app2 with the current stubs; output on stdout
+  ( cd "$APP2" && SSH_KEY_FILE="$APP2/deploy.json" SG_SSH_USER=u1234-abcd@ssh.test.example.com APP=testapp \
+      PATH="$STUB:$PATH" bash "$HERE/deploy.sh" 2>&1 )
+}
+# A fake server: www/<site> holding the release that is live now, plus client data
+# the archive never carries.
+FH="$WORK/srv"; SB="$FH/www/test.example.com"
+server_reset() {
+  rm -rf "$FH"; mkdir -p "$SB/public_html/data"
+  printf '<?php echo "OLD";\n' > "$SB/public_html/index.php"
+  printf '{"client":"data"}\n' > "$SB/public_html/data/settings.json"
+}
+# curl on the server: $1 is the code the ping gets; a canary always gets 404.
+make_curl() {
+  mkdir -p "$WORK/srvbin"
+  cat > "$WORK/srvbin/curl" <<CURLEOF
+#!/usr/bin/env bash
+case "\$*" in *-w*) case "\$*" in *settings.json*|*lib/lws*) echo 404 ;; *) echo $1 ;; esac ;; esac
+exit 0
+CURLEOF
+  chmod +x "$WORK/srvbin/curl"
+}
+run_server() { # unpack the uploaded archives into the fake site and run the captured script
+  cp "$WORK/up/"*.tgz "$SB/"
+  HOME="$FH" PATH="$WORK/srvbin:$PATH" bash "$WORK/remote-script.sh" 2>&1
+}
+
+CASE="a PHP syntax error stops the run on the runner, with nothing uploaded"
+ok=1; make_stubs upload; rm -f "$WORK/scp-called"
+( cd "$APP2" && printf '<?php echo "broken"\n$x = ;\n' > broken.php && git add broken.php && git commit -qm broken )
+out=$(ship2); rc=$?
+[ "$rc" != 0 ] || { ok=0; echo "  exit 0 on a syntax error"; }
+grep -qF "PHP LINT FAILED on the runner" <<<"$out" || { ok=0; echo "  no runner lint error"; }
+grep -qF "lint: " <<<"$out" || { ok=0; echo "  the failing file was not named"; }
+grep -qF -- "-- connection 1 of 2" <<<"$out" && { ok=0; echo "  it went on to upload"; }
+[ -f "$WORK/scp-called" ] && { ok=0; echo "  scp was called"; }
+( cd "$APP2" && git rm -q broken.php && git commit -qm unbreak )
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; echo "$out" | sed 's/^/     | /'; fi
+
+CASE="a good release lints on the server, keeps ONE spare of the old one, and switches"
+ok=1; make_stubs upload; rm -rf "$WORK/up"; make_curl 200; server_reset
+out=$(ship2); rc=$?
+[ "$rc" = 0 ] || { ok=0; echo "  runner side exit $rc"; }
+grep -qF "lint   runner PHP" <<<"$out" || { ok=0; echo "  no runner lint line"; }
+rout=$(run_server); rrc=$?
+[ "$rrc" = 0 ] || { ok=0; echo "  server script exit $rrc"; }
+grep -qF "lint   server PHP" <<<"$rout" || { ok=0; echo "  no server lint line"; }
+grep -q "^spare  .* 1 file(s) kept .* 1 new this deploy" <<<"$rout" || { ok=0; echo "  the spare line is wrong"; }
+grep -qF NEW "$SB/public_html/index.php" || { ok=0; echo "  the new index.php is not live"; }
+[ -f "$SB/.deploy-spare-testapp/files.tgz" ] || { ok=0; echo "  no spare tarball"; }
+# a second good deploy REPLACES the spare: still exactly one
+cp "$WORK/up/"*.tgz "$SB/"; HOME="$FH" PATH="$WORK/srvbin:$PATH" bash "$WORK/remote-script.sh" >/dev/null 2>&1
+n=$(ls -d "$SB"/.deploy-spare-* 2>/dev/null | wc -l | tr -d ' ')
+[ "$n" = 1 ] || { ok=0; echo "  $n spare dirs after two deploys, want 1"; }
+ls -d "$SB"/.deploy-next-* >/dev/null 2>&1 && { ok=0; echo "  the lint scratch dir was left behind"; }
+grep -qF "ROLLED BACK" <<<"$rout" && { ok=0; echo "  a good deploy rolled back"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; echo "$rout" | sed 's/^/     | /'; fi
+
+CASE="a release that fails its smoke test is rolled back: old code back, new files gone, data untouched"
+ok=1; make_curl 500; server_reset
+rout=$(run_server); rrc=$?
+[ "$rrc" != 0 ] || { ok=0; echo "  the server script exited 0 after a failed ping"; }
+grep -qF "ROLLED BACK:" <<<"$rout" || { ok=0; echo "  no ROLLED BACK line"; }
+grep -qF "::error::DEPLOY FAILED AND WAS ROLLED BACK" <<<"$rout" || { ok=0; echo "  no rollback error annotation"; }
+grep -qF "after rollback: ping HTTP" <<<"$rout" || { ok=0; echo "  no re-ping after the rollback"; }
+grep -qF OLD "$SB/public_html/index.php" || { ok=0; echo "  index.php was not restored"; }
+[ -f "$SB/public_html/added.php" ] && { ok=0; echo "  a file this release added survived the rollback"; }
+grep -qF '"client":"data"' "$SB/public_html/data/settings.json" || { ok=0; echo "  client data was touched"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; echo "$rout" | sed 's/^/     | /'; fi
+
+CASE="a syntax error only the HOST's php sees stops before the switch, live tree untouched"
+ok=1; make_curl 200; server_reset
+# Swap a broken file into the uploaded archive, as if the runner's php had accepted it.
+BX="$WORK/bx"; rm -rf "$BX"; mkdir -p "$BX"; tar -xzf "$WORK/up/deploy-testapp.tgz" -C "$BX"
+printf '<?php $x = ;\n' > "$BX/public_html/index.php"; tar -czf "$WORK/up/deploy-testapp.tgz" -C "$BX" public_html
+rout=$(run_server); rrc=$?
+[ "$rrc" != 0 ] || { ok=0; echo "  exit 0 on a host lint error"; }
+grep -qF "PHP LINT FAILED on the server" <<<"$rout" || { ok=0; echo "  no server lint error"; }
+grep -qF OLD "$SB/public_html/index.php" || { ok=0; echo "  the live index.php changed"; }
+grep -qF "ROLLED BACK" <<<"$rout" && { ok=0; echo "  it switched (and rolled back) instead of stopping first"; }
+[ -f "$SB/deploy-testapp.tgz" ] && { ok=0; echo "  the rejected archive was left on the server"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; echo "$rout" | sed 's/^/     | /'; fi
+else
+  echo "skip the lint/rollback cases: no php on PATH"
+fi
 
 echo
 echo "$PASS passed, $FAIL failed"

@@ -2,9 +2,11 @@
 
 A two-connection SiteGround deploy that runs on a GitHub-hosted runner, so no
 SiteGround SSH traffic ever originates from a developer's machine. One `scp` carries
-the archive(s) to `www/<site>/`; one `ssh` extracts into `www/<site>/public_html/`,
-runs the manifest's server-side steps, lints every shipped PHP file and smoke-tests.
-The smoke test is a gate: the ping must answer 200 and no canary may.
+the archive(s) to `www/<site>/`; one `ssh` lints them with the host's PHP, keeps one
+spare copy of what is live, extracts into `www/<site>/public_html/`, runs the
+manifest's server-side steps and smoke-tests. The smoke test is a gate: the ping must
+answer 200 and no canary may — and a failure after the extract restores the spare.
+See **Lint, the spare and the rollback** below.
 
 It reads a `deploy.json` in the app's directory. Only `site` is required.
 
@@ -23,8 +25,8 @@ It reads a `deploy.json` in the app's directory. Only `site` is required.
 | `versionJson` | `true` (default) | write `{"version":"<nearest git tag>"}` into the docroot root; `false` for an app whose `version.json` is its own (an update manifest) |
 | `tagPrefix` | `"app-"` | this app's releases are its own series (`app-v1.2.3`) — for a repo where two apps would otherwise both fire on every `v*` tag. Only `<prefix>v[0-9]*` tags are read, and `version.json` shows the version without the prefix. Without it, only `v[0-9]*` tags are read |
 | `stageScript` | `"tools/stage.sh"` | repo script run after staging, before the archive; env `STAGE` (the `www/<site>` mirror), `DOCROOT_STAGE`, `TAG`, `APP`, `SITE` |
-| `remoteSteps` | `["rm -f \"$D/Default.html\"", "chmod 700 data"]` | run in `$HOME/www/<site>` after the extract, under `set -e`, before the lint; `$D` is `public_html`, `$SITE` the site |
-| `lint` | `"shipped"` (default) or `"none"` | `php -l` every shipped `.php`, or skip |
+| `remoteSteps` | `["rm -f \"$D/Default.html\"", "chmod 700 data"]` | run in `$HOME/www/<site>` after the extract, under `set -e`; `$D` is `public_html`, `$SITE` the site. A failing step rolls the release back |
+| `lint` | `"shipped"` (default) or `"none"` | the SERVER's `php -l` of every shipped `.php`, on an unpacked copy before the switch, or skip it. The runner's pre-upload lint always runs; only the `skip_lint` input skips both |
 | `pingPath` | `"api.php?resource=health&op=ping"` | smoke URL path (a cache-buster is appended); or `pingResource` (`api.php?resource=<x>`); default the site root |
 | `canaryPath` / `canaries` | `"data/settings.json"` / `["build.php"]` | paths that must NOT answer 200 — the leak check |
 | `staging` | `true` | webavie: pass `--staging` to the deploy checks (a rehearsal host must be noindexed) |
@@ -39,7 +41,7 @@ engine-owned directories is generated; the engine digest is computed in the wire
 format `deploy-checks.sh` expects and, when `EXPECT_DIGEST` is passed, the run aborts
 before uploading if the staged engine differs from the one the caller computed. After
 the extract the platform's `deploy-checks.sh` runs; a `PROBLEM(S)` line fails the job
-(the files are deployed by then — fix and deploy again). Inputs `migrate`,
+and rolls the release back. Inputs `migrate`,
 `ensure-admin`, `seed`, `seed-all` run the corresponding engine tools.
 
 ## Wiring a repo
@@ -54,7 +56,7 @@ the extract the platform's `deploy-checks.sh` runs; a `PROBLEM(S)` line fails th
        inputs:
          dry_run:   { type: boolean, default: false, description: "Plan only — connect to nothing" }
          verify:    { type: boolean, default: false, description: "One connection — smoke test only" }
-         skip_lint: { type: boolean, default: false, description: "Skip the server-side php -l" }
+         skip_lint: { type: boolean, default: false, description: "Skip the php -l passes" }
    jobs:
      deploy:
        uses: luhwah/sg-deploy/.github/workflows/deploy.yml@main
@@ -93,6 +95,34 @@ inputs `ssh-key`, `ssh-user`, `known-hosts`, `dir`, `app`, `dry-run`, `verify`,
 `skip-lint`, `migrate`, `ensure-admin`, `seed`, `seed-all`, `expect-digest`,
 `soft-fail-on-block`. `deploy.sh` also runs locally under bash (`-DryRun`, `-Verify`;
 needs `jq`).
+
+## Lint, the spare and the rollback (since 2026-10-14)
+
+1. **Runner lint, before upload.** Every staged `.php` (docroot, `extra`, `.engine`) is
+   `php -l`'d on the runner. One failure: `lint: <php's message>` lines, then
+   `::error::PHP LINT FAILED on the runner … NOTHING was uploaded`. Runs in a dry run too.
+2. **Server lint, before the switch.** The archive is unpacked into
+   `www/<site>/.deploy-next-<app>/`, linted with the host's own `php`, and deleted. A
+   failure deletes the archive and says `PHP LINT FAILED on the server … NOTHING was
+   switched`. Turned off per app by `"lint": "none"`.
+3. **One spare.** The current version of every path the archive will write (plus, for
+   webavie, `lib/lws` and `assets/lws` whole, because the stale sweep deletes there) is
+   tarred into `www/<site>/.deploy-spare-<app>/files.tgz`, and paths that do not exist
+   yet are listed in `new.list`. It replaces the previous spare every deploy — exactly
+   one. Nothing the archive does not carry is in it: data, uploads, stores, config and
+   the database are never copied and never restored.
+4. **Rollback.** From the first byte extracted, any failure — the extract, a remote
+   step, `deploy-checks.sh`, the ping, a canary — removes the files this release added,
+   unpacks the spare, re-pings, and ends the job red. The log says
+   `ROLLED BACK: N file(s) restored, M … removed`, `after rollback: ping HTTP …`,
+   `after rollback: version on disk …`, and the annotation
+   `DEPLOY FAILED AND WAS ROLLED BACK`. A migration that ran is not undone.
+
+## Reads and deploys queue separately
+
+`deploy.yml` runs in the concurrency group `sg-deploy-<repo>-<dir>`; `remote.yml` in
+`sg-remote-<repo>-<dir>`. GitHub keeps one PENDING run per group and a newer one
+replaces it, so while they shared a group a read could cancel a waiting deploy.
 
 ## The second runner address
 

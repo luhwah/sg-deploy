@@ -65,10 +65,17 @@ jobs:
     name: remote
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Serialised with the app's own deploys: a read while an extract is halfway
-    # through is a read of a half-written tree.
+    # ★ READS HAVE THEIR OWN LINE, SEPARATE FROM DEPLOYS (DECISIONS 115, 2026-10-14).
+    # Until today a read shared the deploy's group, "so a read never sees a
+    # half-written tree". But GitHub keeps ONE pending run per concurrency group and
+    # a newer pending run replaces it — even with cancel-in-progress: false — so a
+    # read fired while a deploy was waiting CANCELLED that deploy, silently. Now a
+    # read can never displace a deploy and a deploy can never displace a read; reads
+    # still queue behind each other per site. The price, accepted with the decision:
+    # a read that lands mid-extract sees the tree mid-extract (the deploy's own smoke
+    # and rollback are what judge a release, not a read).
     concurrency:
-      group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
+      group: sg-remote-${{ github.repository }}-${{ inputs.dir }}
       cancel-in-progress: false
     outputs:
       blocked: ${{ steps.run.outputs.blocked }}
@@ -115,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
-      group: sg-deploy-${{ github.repository }}-${{ inputs.dir }}
+      group: sg-remote-${{ github.repository }}-${{ inputs.dir }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
