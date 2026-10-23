@@ -154,6 +154,17 @@ if [ -s "$RCFILE" ]; then
   RC=$(cat "$RCFILE")
   echo "-- end (exit $RC) --"
   if [ "$RC" != "0" ]; then
+    # ★ STRICT: A JOB, NOT A READ (2026-10-23). A scheduled job — the nightly
+    # off-site backup — has nobody reading its log, so "the output is the
+    # product" is wrong for it: its verdict IS the exit code, and the one alarm a
+    # schedule has is the run going red (GitHub mails the owner). The client
+    # sites' nightly backup died on a PHP error every night from 2026-10-18 to
+    # 2026-10-23 and every run was green, because of the `exit 0` below. A caller
+    # that passes `strict: true` gets the script's own exit code as the job's.
+    if [ "${STRICT:-false}" = true ]; then
+      echo "::error::the script returned exit $RC on ${APP:-this account} — this is a STRICT run (a scheduled job, not a read), so the run fails. Its output is above."
+      exit "$RC"
+    fi
     echo "::warning::the script returned exit $RC — it CONNECTED and its output is above. A read-only run does not fail on the script's own exit code; read the output."
   fi
   exit 0

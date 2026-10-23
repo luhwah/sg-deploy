@@ -124,6 +124,14 @@ needs `jq`).
 `sg-remote-<repo>-<dir>`. GitHub keeps one PENDING run per group and a newer one
 replaces it, so while they shared a group a read could cancel a waiting deploy.
 
+## `strict: true` — a scheduled job, not a read
+
+A read's exit code is an answer, so `remote.yml` stays green whatever the script
+returns. A scheduled job (the nightly off-site backup) has nobody reading its log, and
+its exit code is its verdict: with `strict: true` a non-zero exit fails the run, which
+is what makes GitHub mail the owner. Added 2026-10-23 after the client sites' nightly
+backup failed silently for five nights behind green runs.
+
 ## The second runner address
 
 Runner addresses are shared with every other GitHub Actions user, and SiteGround's

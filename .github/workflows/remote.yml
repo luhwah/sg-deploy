@@ -20,6 +20,10 @@ on:
         description: The site's directory in the repo (a repo holding two sites passes it, so the read is serialised with THAT site's deploys)
         type: string
         default: "."
+      strict:
+        description: A scheduled JOB rather than a read - the script's own non-zero exit fails the run, so GitHub mails the owner (the nightly off-site backup; 2026-10-23)
+        type: boolean
+        default: false
     secrets:
       SG_SSH_KEY:
         description: Private half of the dedicated CI deploy key for this site's hosting account
@@ -99,6 +103,7 @@ jobs:
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
           SOFT_FAIL_ON_BLOCK: "true"
+          STRICT: ${{ inputs.strict }}
         run: |
           set -euo pipefail
           umask 077
@@ -142,6 +147,7 @@ jobs:
           APP_SECRET3: ${{ secrets.APP_SECRET3 }}
           APP_IN: ${{ inputs.app }}
           REPO_NAME: ${{ github.event.repository.name }}
+          STRICT: ${{ inputs.strict }}
         run: |
           set -euo pipefail
           umask 077

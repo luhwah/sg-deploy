@@ -41,7 +41,7 @@ run_case() { # $1 name  $2 stub-mode  $3 script  $4 expected-exit   ($SOFT arms 
   local gho="$STUB/gh_output"; : > "$gho"
   local out rc
   out=$(SSH_KEY_FILE=/dev/null SG_SSH_USER=u@example.com APP=testapp \
-        SOFT_FAIL_ON_BLOCK="${SOFT:-false}" GITHUB_OUTPUT="$gho" \
+        SOFT_FAIL_ON_BLOCK="${SOFT:-false}" STRICT="${STRICT:-false}" GITHUB_OUTPUT="$gho" \
         SCRIPT_B64=$(printf '%s' "$3" | base64 -w0) \
         PATH="$STUB:$PATH" bash remote.sh 2>&1)
   rc=$?
@@ -176,6 +176,21 @@ run_case "$CASE" run 'echo "[${APP_SECRET:-unset}|${APP_SECRET2:-unset}|$APP_SEC
 CASE="…and the third is never printed either"
 APP_SECRET3='haddock-do-not-print' \
 run_case "$CASE" run 'echo done' 0 'done' '!haddock-do-not-print'
+
+# ── strict: a scheduled JOB, whose exit code is its verdict (2026-10-23) ───────
+# The nightly backup's failures were green for five nights because of the case
+# above ("a script returning 3 is an ANSWER"). A strict caller must go red.
+CASE="STRICT: a script returning 1 FAILS the job with its own code"
+STRICT=true run_case "$CASE" run 'echo "backup-offsite: upload failed"; exit 1' 1 \
+  "backup-offsite: upload failed" "-- end (exit 1) --" "::error::the script returned exit 1" \
+  '!::warning::the script returned'
+
+CASE="STRICT: a clean script still succeeds"
+STRICT=true run_case "$CASE" run 'echo all sent' 0 "all sent" "-- end (exit 0) --" '!::error::'
+
+CASE="STRICT does not change what a blocked address does"
+STRICT=true SOFT=true run_case "$CASE" timeout 'echo never reached' 0 \
+  "GITHUB_OUTPUT: blocked=1" '!never reached'
 
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
