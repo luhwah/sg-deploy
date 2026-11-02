@@ -70,6 +70,17 @@
 # SOFT_FAIL_ON_BLOCK (a connect timeout records blocked=1 and exits 0 instead of failing,
 # so the workflow can try again from a runner with a different address — see dialed()).
 #
+# PACK MODE (2026-11-02, the self-updating sites plan): `--pack <dir>` (or PACK_DIR) does
+# everything above up to the wire — the same plan, staging, lint, archives and the SAME
+# server script — and then, instead of the scp and the ssh, writes them into <dir>:
+#   deploy-<app>.tgz [deploy-<app>-last.tgz]  what the scp would have carried
+#   remote.sh                                 what the ssh would have run, byte for byte
+#   pack.json                                 app, site, account, shape, tag, digest, files
+# The pull agent (pull/agent.php) installs exactly that on the server: it puts the
+# archives in www/<site>/ as the scp would, and runs remote.sh with bash as the ssh
+# would. One copy of the server steps (lint, spare, switch, checks, smoke, rollback)
+# serves both routes, and the tests below prove them on both. 0 connections.
+#
 # sg-connections: 2   (one scp, one ssh — only if run LOCALLY; on a runner it costs the local ration nothing)
 set -euo pipefail
 shopt -s nocasematch   # PowerShell's -match / -in are case-insensitive; keep parity
@@ -78,8 +89,12 @@ DRY_RUN="${DRY_RUN:-false}"; VERIFY="${VERIFY:-false}"; SKIP_LINT="${SKIP_LINT:-
 MIGRATE="${MIGRATE:-false}"; ENSURE_ADMIN="${ENSURE_ADMIN:-false}"; SEED="${SEED:-false}"; SEED_ALL="${SEED_ALL:-false}"
 SEED_REFRESH="${SEED_REFRESH:-false}"
 SOFT_FAIL_ON_BLOCK="${SOFT_FAIL_ON_BLOCK:-false}"
+PACK_DIR="${PACK_DIR:-}"
+NEXT_IS_PACK=0
 for a in "$@"; do
+  if [ "$NEXT_IS_PACK" = 1 ]; then PACK_DIR="$a"; NEXT_IS_PACK=0; continue; fi
   case "$a" in
+    --pack)                    NEXT_IS_PACK=1 ;;
     -DryRun|-WhatIf|--dry-run) DRY_RUN=true ;;
     -Verify|--verify)          VERIFY=true ;;
     -SkipLint|--skip-lint)     SKIP_LINT=true ;;
@@ -414,7 +429,12 @@ fi
 
 if [ "$DRY_RUN" = true ]; then echo "dry run: nothing transferred, nothing connected"; exit 0; fi
 
-ssh_setup
+if [ -n "$PACK_DIR" ]; then
+  mkdir -p "$PACK_DIR" || { echo "::error::cannot create the pack dir $PACK_DIR"; exit 1; }
+  [ -z "$(ls -A "$PACK_DIR" 2>/dev/null)" ] || { echo "::error::the pack dir $PACK_DIR is not empty"; exit 1; }
+else
+  ssh_setup
+fi
 TB=$(mktemp -d -t "tar-$APP-XXXXXX"); trap 'rm -rf "$STAGE" "$TB"' EXIT
 printf '%s\n' "${ENTRIES[@]}" | { if [ -n "$LAST_PATH" ]; then grep -vxF "$LAST_PATH"; else cat; fi; } > "$TB/main.list"
 tar -czf "$TB/deploy-$APP.tgz" -C "$STAGE" -T "$TB/main.list"
@@ -425,8 +445,10 @@ echo "archive: $(du -ch "${UP[@]}" | tail -1 | cut -f1)"
 # ── Connection 1 of 2: the archive(s) go up, beside public_html — ONE scp ────
 # Both files ride the same scp, so the "last" file cannot be missing on the server
 # while the rest has landed: either the connection carried both or the run stops here.
-echo "-- connection 1 of 2: scp -> $BASE/deploy-$APP.tgz$([ -n "$LAST_PATH" ] && echo " + deploy-$APP-last.tgz")"
-dialed scp -P "$PORT" "${SSH_OPTS[@]}" "${UP[@]}" "$SSH_USER:$BASE/"
+if [ -z "$PACK_DIR" ]; then
+  echo "-- connection 1 of 2: scp -> $BASE/deploy-$APP.tgz$([ -n "$LAST_PATH" ] && echo " + deploy-$APP-last.tgz")"
+  dialed scp -P "$PORT" "${SSH_OPTS[@]}" "${UP[@]}" "$SSH_USER:$BASE/"
+fi
 
 # ── Connection 2 of 2: extract (last file last), steps, checks, lint, smoke ──
 # The engine tools this run will ask for, filled in below and reported afterwards.
@@ -586,6 +608,19 @@ EOROLL
 } > "$R"
 SLINT="server lint (host php) before the switch"; { [ "$SKIP_LINT" = true ] || [ "$LINT" = none ]; } && SLINT="no server lint"
 OPS_NOTE=""; [ ${#ENGINE_OPS[@]} -gt 0 ] && OPS_NOTE=", $(IFS='+'; echo "${ENGINE_OPS[*]}" | sed 's/+/ + /g')"
+if [ -n "$PACK_DIR" ]; then
+  cp "${UP[@]}" "$PACK_DIR/"
+  cp "$R" "$PACK_DIR/remote.sh"; rm -f "$R"
+  FILES_JSON=$(cd "$PACK_DIR" && for f in deploy-*.tgz remote.sh; do printf '%s\t%s\t%s\n' "$f" "$(sha256sum "$f" | cut -d' ' -f1)" "$(wc -c < "$f" | tr -d ' ')"; done \
+    | jq -R -s 'split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {sha256: .[1], size: (.[2] | tonumber)}}) | from_entries')
+  jq -n --arg app "$APP" --arg site "$SITE" --arg user "${SSH_USER%%@*}" --arg shape "$SHAPE" --arg doc "$DOC" \
+        --arg tag "$TAG" --arg digest "$DIGEST" --arg ops "$(IFS=+; echo "${ENGINE_OPS[*]:-}")" --argjson files "$FILES_JSON" \
+        '{app: $app, site: $site, account: $user, shape: $shape, docroot: $doc, tag: $tag, digest: $digest, ops: $ops, files: $files}' > "$PACK_DIR/pack.json"
+  echo "-- packed (no connection): $SLINT, spare, extract$OPS_NOTE, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks'), smoke — written to $PACK_DIR for the pull agent"
+  [ -n "$DIGEST" ] && echo "engine digest $DIGEST"
+  echo "== $APP packed (0 connections) =="
+  exit 0
+fi
 echo "-- connection 2 of 2: $SLINT, spare, extract$OPS_NOTE, ${#REMOTE_STEPS[@]} step(s)$([[ "$SHAPE" == webavie ]] && echo ', sweep, deploy checks'), smoke — any failure after the switch restores the spare"
 dialed ssh -p "$PORT" "${SSH_OPTS[@]}" "$SSH_USER" 'bash -s' < "$R"
 rm -f "$R"

@@ -162,3 +162,22 @@ pass is a RED run and a workflow that exists to fail is one somebody eventually 
 for a broken deploy. To re-prove the chain after changing it,
 `git log --diff-filter=D -- .github/workflows/selftest-retry.yml` names the commit and
 `git checkout <that>^ -- .github/workflows/selftest-retry.yml .selftest/` brings it back.
+
+## Pack mode and the pull agent (since 2026-11-02)
+
+`deploy.sh --pack <dir>` (or `PACK_DIR`) does everything a deploy does up to the wire —
+the plan, staging, the runner lint, the archive(s) and the **same server script** — and
+writes them into `<dir>` (`deploy-<app>.tgz`, `deploy-<app>-last.tgz` when `last` is set,
+`remote.sh`, `pack.json`) instead of the scp and the ssh. 0 connections.
+
+`pull/agent.php` is the other half: run by each hosting account's own cron
+(`php $HOME/lws-pull/agent.php --every=5 --account=<user>`), it reads the newest
+**signed** release for each app in its `config.json` from Luhwah's R2 bucket, checks the
+Ed25519 signature (public key compiled in), the account, the pinned site, a sequence
+number that only goes up and every file's sha256, then puts the archives in
+`www/<site>/` and runs `remote.sh` with bash — exactly what the ssh would have run, so
+lint, spare, switch, checks, smoke and rollback are identical. One attempt per release;
+a rolled-back release is never retried by itself. A `hold` file beside it stops all
+installs. Results and a status file go back to the bucket. Releasing, installing the
+agent and the drills live in the luhwah workspace (`tools/ship.mjs <app> --pull`,
+`tools/pull-release.mjs`, `tools/pull-check.mjs` for the end-to-end test).

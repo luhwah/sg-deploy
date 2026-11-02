@@ -314,6 +314,21 @@ else
   echo "skip the lint/rollback cases: no php on PATH"
 fi
 
+# ── PACK MODE (2026-11-02): the same plan and server script, written to a folder ──
+CASE="--pack writes the archive, the server script and pack.json, and connects to nothing"
+ok=1; make_stubs timeout; rm -f "$WORK/scp-called"; PD="$WORK/packed"; rm -rf "$PD"
+out=$(cd "$APP" && SG_SSH_USER=u1234-abcd@ssh.test.example.com APP=testapp PATH="$STUB:$PATH" bash "$HERE/deploy.sh" --pack "$PD" 2>&1); rc=$?
+[ "$rc" = 0 ] || { ok=0; echo "  exit $rc"; }
+[ -f "$PD/deploy-testapp.tgz" ] && [ -f "$PD/remote.sh" ] && [ -f "$PD/pack.json" ] || { ok=0; echo "  a packed file is missing"; }
+[ -f "$WORK/scp-called" ] && { ok=0; echo "  scp was called"; }
+grep -qF "== testapp packed (0 connections) ==" <<<"$out" || { ok=0; echo "  no packed line"; }
+[ "$(jq -r .account "$PD/pack.json")" = u1234-abcd ] || { ok=0; echo "  pack.json has the wrong account"; }
+[ "$(jq -r '.files["remote.sh"].sha256' "$PD/pack.json")" = "$(sha256sum "$PD/remote.sh" | cut -d' ' -f1)" ] || { ok=0; echo "  remote.sh fingerprint is wrong"; }
+grep -qF 'DONE=1' "$PD/remote.sh" || { ok=0; echo "  the server script is not the deploy's"; }
+out2=$(cd "$APP" && SG_SSH_USER=u1234-abcd@ssh.test.example.com APP=testapp bash "$HERE/deploy.sh" --pack "$PD" 2>&1); rc2=$?
+[ "$rc2" != 0 ] && grep -qF "is not empty" <<<"$out2" || { ok=0; echo "  packing into a non-empty folder was not refused"; }
+if [ "$ok" = 1 ]; then PASS=$((PASS+1)); echo "ok   $CASE"; else FAIL=$((FAIL+1)); echo "FAIL $CASE"; echo "$out" | sed 's/^/     | /'; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]
