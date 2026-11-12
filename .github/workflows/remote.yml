@@ -83,6 +83,7 @@ jobs:
       cancel-in-progress: false
     outputs:
       blocked: ${{ steps.run.outputs.blocked }}
+      transient: ${{ steps.run.outputs.transient }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -120,10 +121,13 @@ jobs:
   # The read's version of deploy.yml's `retry` — same reason, same one qualifying
   # line from OpenSSH, and a read is repeatable by definition. The second attempt
   # fails for real, because two blocked draws in a row is worth a mail.
+  # Since 2026-11-12 it also catches a STRICT job's passing fault (transient=1: a
+  # reset upload, a killed process; remote.sh "A PASSING FAULT"), after a minute's
+  # pause so a hiccup at SiteGround or R2 has cleared.
   retry:
     name: remote (second runner address)
     needs: remote
-    if: needs.remote.outputs.blocked == '1'
+    if: needs.remote.outputs.blocked == '1' || needs.remote.outputs.transient == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
@@ -135,6 +139,9 @@ jobs:
           repository: luhwah/sg-deploy
           ref: main
           path: sg-deploy
+      - name: Pause after a passing fault
+        if: needs.remote.outputs.transient == '1'
+        run: sleep 60
       - name: Run
         shell: bash
         env:

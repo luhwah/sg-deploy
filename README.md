@@ -150,6 +150,12 @@ fails on the first attempt — retrying one is how a house IP gets firewalled. A
 error, a canary answering 200, a wrong engine digest and a failed ping all fail the
 first job outright, and the second never starts.
 
+**A strict job's passing fault takes the same road (2026-11-12).** On the first job, a
+`strict: true` script that failed with a known passing cause (exit 137/143, a reset or
+timed-out upload, `file changed as we read it`; `transient()` in `remote.sh`) records
+`transient=1` and exits green, and the second job runs it again after a minute. A
+budget `REFUSED`, a `Permission denied` or anything unrecognised fails at once.
+
 Two blocked addresses in a row still fails the run, which is the point: a red run
 should mean something. `deploy.test.sh` and `remote.test.sh` hold the cases (they stub
 `ssh`/`scp` and connect to nothing — `bash deploy.test.sh`).

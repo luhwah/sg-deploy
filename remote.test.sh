@@ -192,6 +192,35 @@ CASE="STRICT does not change what a blocked address does"
 STRICT=true SOFT=true run_case "$CASE" timeout 'echo never reached' 0 \
   "GITHUB_OUTPUT: blocked=1" '!never reached'
 
+# ── a passing fault in a STRICT job gets the second runner (2026-11-12) ────────
+CASE="STRICT first job: genavie's reset upload asks for a second runner"
+STRICT=true SOFT=true run_case "$CASE" run 'echo "  backup-offsite: upload: Recv failure: Connection reset by peer"; echo "  !! off-site records copy FAILED (exit 1)"; exit 1' 0 \
+  "GITHUB_OUTPUT: transient=1" "running it once more from a fresh runner" '!::error::'
+
+CASE="STRICT first job: a process the host killed (exit 137, leadavie) asks for a second runner"
+STRICT=true SOFT=true run_case "$CASE" run 'echo "-- content: lv_data"; exit 137' 0 \
+  "GITHUB_OUTPUT: transient=1"
+
+CASE="STRICT first job: a file written mid-tar asks for a second runner"
+STRICT=true SOFT=true run_case "$CASE" run 'echo "tar: .: file changed as we read it" >&2; exit 1' 0 \
+  "GITHUB_OUTPUT: transient=1"
+
+CASE="STRICT: a budget REFUSAL is never retried, even on a network word"
+STRICT=true SOFT=true run_case "$CASE" run 'echo "backup-offsite: REFUSED - this upload would take the bucket past the budget (network: fine)"; exit 1' 1 \
+  "::error::the script returned exit 1" '!transient=1'
+
+CASE="STRICT: an unrecognised failure fails on the first job"
+STRICT=true SOFT=true run_case "$CASE" run 'echo "!! no data/ here"; exit 1' 1 \
+  "::error::the script returned exit 1" '!transient=1'
+
+CASE="STRICT second job (no SOFT): a passing fault fails for real"
+STRICT=true run_case "$CASE" run 'echo "upload: Recv failure: Connection reset by peer"; exit 1' 1 \
+  "::error::the script returned exit 1" '!transient=1'
+
+CASE="a READ (not strict) is unchanged by a reset: an answer, never retried"
+SOFT=true run_case "$CASE" run 'echo "Connection reset by peer"; exit 1' 0 \
+  "::warning::the script returned exit 1" '!transient=1'
+
 CASE="the stamp never leaks into the output"
 run_case "$CASE" run 'echo "__sg_remote_rc_9__ is not mine"; exit 0' 0 \
   "__sg_remote_rc_9__ is not mine" "-- end (exit 0) --"

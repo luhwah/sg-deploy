@@ -61,6 +61,15 @@ else
   SSH_OPTS+=(-o StrictHostKeyChecking=accept-new)
 fi
 
+# A STRICT script's failure that is worth one more try (see "A PASSING FAULT" below).
+# $1 = its exit code, the rest = files holding what it printed. Only signatures seen in a real failed night,
+# plus their obvious siblings; never a refusal, never a key problem.
+transient() {
+  case "$1" in 137|143) return 0 ;; esac
+  grep -qiE 'Recv failure|Send failure|Connection reset by peer|Connection timed out|Operation timed out|timed out after|Could not resolve host|Empty reply from server|SSL_(read|write)|OpenSSL SSL|upload failed \(HTTP (5[0-9][0-9]|429)\)|network: |file changed as we read it|Killed|\(exit (137|143)\)' "${@:2}" \
+    && ! grep -qiE 'REFUSED|Permission denied|wrong account' "${@:2}"
+}
+
 SCRIPT=$(mktemp)
 trap 'rm -f "$SCRIPT"' EXIT
 printf '%s' "$SCRIPT_B64" | base64 -d | tr -d '\r' > "$SCRIPT"
@@ -135,7 +144,10 @@ RCFILE=$(mktemp)
 # blocked address from a refused key means reading what OpenSSH said. It is replayed
 # below, before the end marker, so nothing is swallowed.
 ERRFILE=$(mktemp)
-trap 'rm -f "$SCRIPT" "$RCFILE" "$ERRFILE"' EXIT
+# The script's output is also kept, so a STRICT job can tell a passing fault (a
+# reset upload, a process the host killed) from a real one — see TRANSIENT below.
+OUTFILE=$(mktemp)
+trap 'rm -f "$SCRIPT" "$RCFILE" "$ERRFILE" "$OUTFILE"' EXIT
 set +e
 ssh -p "$PORT" "${SSH_OPTS[@]}" "$SG_SSH_USER" 'bash -s; printf "__sg_remote_rc_%s__" "$?"' < "$SCRIPT" 2>"$ERRFILE" | awk -v rcf="$RCFILE" '
       # The stamp carries no newline of its own, so a script whose output ended
@@ -145,7 +157,7 @@ ssh -p "$PORT" "${SSH_OPTS[@]}" "$SG_SSH_USER" 'bash -s; printf "__sg_remote_rc_
         head = substr($0, 1, RSTART - 1); if (head != "") print head
         next
       }
-      { print; fflush() }'
+      { print; fflush() }' | tee "$OUTFILE"
 SSH_RC=${PIPESTATUS[0]}
 set -e
 if [ -s "$ERRFILE" ]; then cat "$ERRFILE" >&2; fi
@@ -162,6 +174,22 @@ if [ -s "$RCFILE" ]; then
     # 2026-10-23 and every run was green, because of the `exit 0` below. A caller
     # that passes `strict: true` gets the script's own exit code as the job's.
     if [ "${STRICT:-false}" = true ]; then
+      # ★ A PASSING FAULT GETS A SECOND RUNNER, LIKE A BLOCKED ADDRESS (2026-11-12).
+      # Every red nightly in six weeks was one of these and every one went green on
+      # a plain re-run, which until now a person did by hand the next day: genavie's
+      # upload to R2 "Recv failure: Connection reset by peer" (2026-11-12), leadavie's
+      # tar killed by the host, exit 137 (2026-11-06), a live write during tar
+      # ("file changed as we read it", the workshop, 2026-11-11). On the FIRST job
+      # only (SOFT_FAIL_ON_BLOCK), such an exit records transient=1 and exits 0, and
+      # the retry job in .github/workflows/remote.yml runs the script again a minute
+      # later from a fresh runner — strict, so a second failure is a red run. A
+      # budget refusal, a missing folder or anything else unrecognised is NOT
+      # retried: that needs a person, and fails now.
+      if [ "${SOFT_FAIL_ON_BLOCK:-false}" = true ] && transient "$RC" "$OUTFILE" "$ERRFILE"; then
+        if [ -n "${GITHUB_OUTPUT:-}" ]; then echo "transient=1" >> "$GITHUB_OUTPUT"; fi
+        echo "::warning::the script returned exit $RC on ${APP:-this account} for a passing reason (network reset, a killed process, a file written mid-copy) — running it once more from a fresh runner."
+        exit 0
+      fi
       echo "::error::the script returned exit $RC on ${APP:-this account} — this is a STRICT run (a scheduled job, not a read), so the run fails. Its output is above."
       exit "$RC"
     fi
